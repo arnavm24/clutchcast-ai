@@ -1,5 +1,6 @@
 from pathlib import Path
 import html
+import re
 import sys
 import textwrap
 
@@ -21,6 +22,8 @@ REPORTS_DIR = Path("reports")
 
 DEFAULT_HOME_COLOR = "#3B82F6"
 DEFAULT_AWAY_COLOR = "#EF4444"
+CHART_AWAY_COLOR = "#38BDF8"
+CHART_HOME_COLOR = "#F43F5E"
 
 MODE_LABELS = {
     "baseline": "Baseline Model",
@@ -72,10 +75,10 @@ def apply_custom_css() -> None:
         :root { --panel: #101621; --panel-soft: #151D2A; --line: #263244; --text: #F8FAFC; --muted: #94A3B8; }
         .stApp { background: radial-gradient(circle at top left, #162033 0, #070A12 34%, #05070D 100%); color: var(--text); }
         [data-testid="stSidebar"] { background-color: #070A12; border-right: 1px solid #1F2937; }
-        .block-container { padding-top: 1.15rem; padding-bottom: 2rem; max-width: 1500px; }
+        .block-container { padding-top: 2.45rem; padding-bottom: 2rem; max-width: 1500px; }
         h1, h2, h3 { letter-spacing: 0; }
         .eyebrow { color: #8EA0BA; font-size: .72rem; text-transform: uppercase; letter-spacing: .14em; font-weight: 700; }
-        .brand-header { display:flex; align-items:center; justify-content:space-between; gap: 18px; margin-bottom: 12px; }
+        .brand-header { display:flex; align-items:center; justify-content:space-between; gap: 18px; margin: .35rem 0 16px; padding-top: 2px; }
         .brand-left { display:flex; align-items:center; gap: 14px; }
         .brand-mark { width: 54px; height: 54px; border-radius: 18px; position: relative; display:flex; align-items:center; justify-content:center; color:#F8FAFC; font-weight: 950; letter-spacing:-.08em; background: radial-gradient(circle at 30% 25%, #FDBA74 0, #F97316 38%, #1D4ED8 100%); box-shadow: 0 16px 45px rgba(29,78,216,.32); overflow:hidden; }
         .brand-mark:before { content:""; position:absolute; inset: 10px; border: 2px solid rgba(255,255,255,.42); border-radius: 50%; }
@@ -105,13 +108,19 @@ def apply_custom_css() -> None:
         .wp-bar { height: 24px; border-radius: 999px; overflow: hidden; display:flex; background:#111827; border:1px solid rgba(148,163,184,.22); }
         .wp-away, .wp-home { height: 100%; }
         .metric-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
-        .metric-card, .intel-card, .live-card, .summary-card, .empty-card { border: 1px solid rgba(148,163,184,.18); background: rgba(15,23,42,.78); border-radius: 16px; padding: 16px; min-height: 116px; }
-        .metric-label, .summary-label { color: #94A3B8; font-size: .74rem; text-transform: uppercase; letter-spacing: .12em; font-weight: 800; }
-        .metric-value, .summary-value { color: #F8FAFC; font-size: 1.36rem; line-height: 1.15; font-weight: 900; margin-top: 8px; }
-        .summary-value.big { font-size:1.7rem; }
-        .metric-detail, .summary-detail { color: #A7B4C8; font-size: .86rem; line-height: 1.35; margin-top: 8px; }
-        .summary-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 8px 0 18px; }
-        .tab-intro { color:#AEBBD0; margin: -4px 0 14px; max-width: 900px; }
+        .metric-card, .intel-card, .live-card, .summary-card, .empty-card, .story-card, .insight-card, .recap-card { border: 1px solid rgba(148,163,184,.18); background: rgba(15,23,42,.78); border-radius: 16px; padding: 16px; min-height: 116px; }
+        .metric-label, .summary-label, .card-kicker { color: #94A3B8; font-size: .74rem; text-transform: uppercase; letter-spacing: .12em; font-weight: 800; }
+        .metric-value, .summary-value, .card-value { color: #F8FAFC; font-size: 1.36rem; line-height: 1.15; font-weight: 900; margin-top: 8px; }
+        .summary-value.big, .card-value.big { font-size:1.7rem; }
+        .metric-detail, .summary-detail, .card-detail { color: #A7B4C8; font-size: .86rem; line-height: 1.35; margin-top: 8px; }
+        .summary-grid, .story-grid, .insight-grid, .recap-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 8px 0 18px; }
+        .story-grid { grid-template-columns: 1.35fr 1fr 1fr; }
+        .insight-grid, .recap-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .tab-intro { color:#AEBBD0; margin: 0 0 14px; max-width: 900px; }
+        .story-shell { border: 1px solid rgba(148,163,184,.16); background: linear-gradient(145deg, rgba(15,23,42,.82), rgba(6,10,18,.86)); border-radius: 18px; padding: 16px; margin-top: 14px; }
+        .story-title { color:#F8FAFC; font-size:1.15rem; font-weight:950; margin-bottom: 10px; }
+        .story-lede { color:#D7E3F4; font-size:.98rem; line-height:1.45; margin-bottom:12px; }
+        .icon-pill { width:42px; height:42px; border-radius:14px; display:flex; align-items:center; justify-content:center; background:rgba(59,130,246,.18); color:#DBEAFE; font-weight:950; font-size:1.2rem; margin-bottom:10px; }
         .player-chip { display:flex; align-items:center; gap: 12px; }
         .avatar { width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg,#F97316,#2563EB); color:#fff; font-weight:950; letter-spacing:.02em; box-shadow: 0 12px 28px rgba(37,99,235,.25); flex:0 0 auto; }
         .badge { display:inline-block; border:1px solid rgba(148,163,184,.24); border-radius:999px; padding:4px 8px; color:#CBD5E1; background:rgba(15,23,42,.82); font-size:.76rem; font-weight:800; }
@@ -119,13 +128,13 @@ def apply_custom_css() -> None:
         .intel-title { color: #E2E8F0; font-weight: 900; margin-bottom: 6px; }
         .intel-body { color: #AEBBD0; line-height: 1.4; font-size: .9rem; }
         .section-card { border: 1px solid rgba(148,163,184,.16); background: rgba(15,23,42,.62); border-radius: 18px; padding: 16px; }
-        .right-rail-spacer { height: 42px; }
+        .right-rail-spacer { height: 56px; }
         .empty-card { min-height: auto; color:#AEBBD0; }
         div[data-testid="stMetric"] { background: rgba(15,23,42,.78); border: 1px solid rgba(148,163,184,.16); padding: 1rem; border-radius: 14px; }
-        .stTabs [data-baseweb="tab-list"] { gap: .35rem; }
+        .stTabs [data-baseweb="tab-list"] { gap: .35rem; margin-top: .35rem; }
         .stTabs [data-baseweb="tab"] { background: rgba(15,23,42,.66); border-radius: 999px; color: #CBD5E1; padding: .5rem 1rem; }
         .stTabs [aria-selected="true"] { background: #E5E7EB !important; color: #111827 !important; }
-        @media (max-width: 980px) { .scoreboard { grid-template-columns: 1fr; } .metric-grid, .summary-grid { grid-template-columns: 1fr 1fr; } .team-box.home { flex-direction: row; text-align:left; } .brand-header { align-items:flex-start; flex-direction:column; } .right-rail-spacer { height: 0; } }
+        @media (max-width: 980px) { .scoreboard { grid-template-columns: 1fr; } .metric-grid, .summary-grid, .story-grid, .insight-grid, .recap-grid { grid-template-columns: 1fr; } .team-box.home { flex-direction: row; text-align:left; } .brand-header { align-items:flex-start; flex-direction:column; } .right-rail-spacer { height: 0; } }
         </style>
         """
     )
@@ -457,6 +466,18 @@ def render_summary_grid(cards: list[str]) -> None:
     render_html('<div class="summary-grid">' + "".join(cards) + '</div>')
 
 
+def render_info_card(title: str, value: str, detail: str, icon: str = "") -> str:
+    icon_html = f'<div class="icon-pill">{esc(icon)}</div>' if icon else ""
+    return (
+        '<div class="insight-card">'
+        f'{icon_html}'
+        f'<div class="card-kicker">{esc(title)}</div>'
+        f'<div class="card-value">{esc(value)}</div>'
+        f'<div class="card-detail">{esc(detail)}</div>'
+        '</div>'
+    )
+
+
 def show_empty_report_card(title: str, command: str) -> None:
     render_html(
         f"""
@@ -606,22 +627,29 @@ def show_win_probability_chart(
     )
     chart_data_long["team"] = chart_data_long["team"].replace({"home_win_prob_pct": home_team, "away_win_prob_pct": away_team})
 
-    home_color = team_color(home_team, DEFAULT_HOME_COLOR)
-    away_color = team_color(away_team, DEFAULT_AWAY_COLOR)
     fig = px.line(
         chart_data_long,
         x="game_minutes_elapsed",
         y="win_probability_pct",
         color="team",
-        color_discrete_map={home_team: home_color, away_team: away_color},
+        color_discrete_map={away_team: CHART_AWAY_COLOR, home_team: CHART_HOME_COLOR},
         hover_data=["period", "Clock", "home_score", "away_score", "score_margin_home", "event_description"],
-        labels={"game_minutes_elapsed": "Game Time", "win_probability_pct": "Win Probability (%)"},
+        labels={"game_minutes_elapsed": "Game Time", "win_probability_pct": "Win Probability (%)", "team": "Team"},
     )
-    fig.update_traces(line=dict(width=3))
+    fig.update_traces(line=dict(width=4))
     fig.update_yaxes(range=[0, 100], gridcolor="#1F2937")
     fig.update_xaxes(gridcolor="#1F2937")
-    fig.add_hline(y=50, line_dash="dot", line_color="#9CA3AF")
-    fig.update_layout(template="plotly_dark", plot_bgcolor="#0B1020", paper_bgcolor="rgba(0,0,0,0)", hovermode="x unified", height=430, margin=dict(l=20, r=20, t=30, b=20))
+    fig.add_hline(y=50, line_dash="dot", line_color="#CBD5E1", opacity=.72)
+    fig.update_layout(
+        template="plotly_dark",
+        plot_bgcolor="#0B1020",
+        paper_bgcolor="rgba(0,0,0,0)",
+        hovermode="x unified",
+        height=430,
+        margin=dict(l=20, r=20, t=42, b=20),
+        legend_title_text="",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(15,23,42,.72)", bordercolor="#334155", borderwidth=1, font=dict(color="#E5E7EB", size=13)),
+    )
     st.plotly_chart(fig, width="stretch", key=chart_key)
 
 
@@ -637,6 +665,81 @@ def show_brand_header(game_id: str, home_team: str, away_team: str) -> None:
             </div>
           </div>
           <div class="brand-badge">Historical Dashboard · Live Backend MVP Available</div>
+        </div>
+        """
+    )
+
+
+def build_win_probability_story(data: dict, predictions: pd.DataFrame, home_team: str, away_team: str) -> dict:
+    row = predictions.iloc[-1]
+    home_score = int(row["home_score"])
+    away_score = int(row["away_score"])
+    home_prob = float(row["home_win_prob_pct"])
+    away_prob = float(row["away_win_prob_pct"])
+    seconds_remaining = float(row.get("seconds_remaining", 0))
+    period = int(row["period"])
+    clock = format_nba_clock(row["clock"])
+    leader = home_team if home_score > away_score else away_team if away_score > home_score else "Neither team"
+    favorite = home_team if home_prob >= away_prob else away_team
+    favorite_prob = max(home_prob, away_prob)
+    turning_points = build_turning_points(predictions, top_n=1)
+    key_play = get_insight(data, "Most Valuable Play", field="details", default="No key play report is available yet.")
+
+    if not turning_points.empty:
+        swing = turning_points.iloc[0]
+        biggest_swing = f"{float(swing['wp_swing_pct']):+.1f} pts"
+        biggest_detail = short_text(str(swing["event_description"]), 120)
+    else:
+        biggest_swing = "Pending"
+        biggest_detail = "Run the pipeline reports to identify the biggest swing."
+
+    if len(predictions) > 10:
+        recent_delta = (float(predictions.iloc[-1]["home_win_prob"]) - float(predictions.iloc[-10]["home_win_prob"])) * 100
+    else:
+        recent_delta = 0.0
+    momentum_team = home_team if recent_delta > 0 else away_team if recent_delta < 0 else "Even"
+    momentum_text = "No strong recent momentum edge." if momentum_team == "Even" else f"{momentum_team} gained {abs(recent_delta):.1f} WP points over the latest stretch."
+
+    is_started = len(predictions) <= 5 or seconds_remaining >= (47 * 60)
+    is_finished = seconds_remaining == 0
+
+    if is_started:
+        lede = f"Early read: {favorite} opens as the live favorite at {favorite_prob:.1f}%, with score context still forming."
+        state = f"{format_period(period)}, {clock}"
+    elif is_finished:
+        winner = home_team if home_score > away_score else away_team if away_score > home_score else "Neither team"
+        loser_peak = predictions["away_win_prob_pct"].max() if winner == home_team else predictions["home_win_prob_pct"].max() if winner == away_team else 50.0
+        lede = f"Final: {winner} closed out a {away_score}-{home_score} game. The losing side peaked at {loser_peak:.1f}% win probability before the result settled."
+        state = "Final"
+    else:
+        score_text = f"{away_team} {away_score}, {home_team} {home_score}"
+        lede = f"Live story: {leader} leads {score_text}; {favorite} owns the current model edge at {favorite_prob:.1f}%."
+        state = f"{format_period(period)}, {clock}"
+
+    return {
+        "lede": lede,
+        "state": state,
+        "favorite": f"{favorite} · {favorite_prob:.1f}%",
+        "biggest_swing": biggest_swing,
+        "biggest_detail": biggest_detail,
+        "momentum": momentum_text,
+        "key_play": short_text(key_play, 140),
+    }
+
+
+def show_win_probability_story(data: dict, predictions: pd.DataFrame, home_team: str, away_team: str) -> None:
+    story = build_win_probability_story(data, predictions, home_team, away_team)
+    render_html(
+        f"""
+        <div class="story-shell">
+          <div class="story-title">Win Probability Story</div>
+          <div class="story-lede">{esc(story['lede'])}</div>
+          <div class="story-grid">
+            {render_info_card("Current State", story['state'], story['favorite'], "⏱")}
+            {render_info_card("Biggest Swing", story['biggest_swing'], story['biggest_detail'], "📈")}
+            {render_info_card("Momentum Read", "Latest Flow", story['momentum'], "🔥")}
+          </div>
+          <div class="card-detail"><span class="badge">Key play</span> {esc(story['key_play'])}</div>
         </div>
         """
     )
@@ -663,13 +766,35 @@ def show_game_overview(data: dict, predictions: pd.DataFrame, game_id: str, home
 
 def show_game_insights(data: dict, game_id: str) -> None:
     st.subheader("Game Insights")
+    render_html('<div class="tab-intro">Game-specific intelligence turns the probability feed into a quick broadcast-style read.</div>')
 
-    if data["game_insights_md"]:
-        st.markdown(data["game_insights_md"])
-    elif not data["game_insights"].empty:
-        st.dataframe(clean_table_columns(data["game_insights"]), width="stretch", hide_index=True)
-    else:
+    insights = data["game_insights"]
+    if insights.empty:
         show_empty_report_card("Game Insights", f"python src/game_insights.py --game-id {game_id}")
+        if data["game_insights_md"]:
+            with st.expander("Raw game insights text"):
+                st.markdown(data["game_insights_md"])
+        return
+
+    drama = get_insight(data, "Game Drama Score", field="value", default="Pending")
+    drama_detail = get_insight(data, "Game Drama Score", field="details", default="Run game insights to calculate drama score.")
+    mvp_value = get_insight(data, "Most Valuable Play", field="value", default="Most Valuable Play")
+    mvp_detail = get_insight(data, "Most Valuable Play", field="details", default="Run game insights to identify the key play.")
+    damage_value = get_insight(data, "Most Damaging Play", field="value", default="Most Damaging Play")
+    damage_detail = get_insight(data, "Most Damaging Play", field="details", default="Run game insights to identify the damaging play.")
+    clutch_value = get_insight(data, "Clutch-Time Scoring Summary", field="value", default="Clutch scoring")
+    clutch_detail = get_insight(data, "Clutch-Time Scoring Summary", field="details", default="Run game insights to calculate clutch scoring.")
+
+    cards = [
+        render_info_card("Game Drama Score", f"{drama}/100" if str(drama).isdigit() else drama, short_text(drama_detail, 180), "🏀"),
+        render_info_card("Most Valuable Play", short_text(mvp_value, 42), short_text(mvp_detail, 180), "📈"),
+        render_info_card("Most Damaging Play", short_text(damage_value, 42), short_text(damage_detail, 180), "🔥"),
+        render_info_card("Clutch-Time Scoring", short_text(clutch_value, 42), short_text(clutch_detail, 180), "⏱"),
+    ]
+    render_html('<div class="insight-grid">' + "".join(cards) + '</div>')
+
+    with st.expander("Detailed game insights table"):
+        st.dataframe(clean_table_columns(insights), width="stretch", hide_index=True)
 
 
 def show_turning_points_tab(predictions: pd.DataFrame, game_id: str) -> None:
@@ -686,7 +811,8 @@ def show_turning_points_tab(predictions: pd.DataFrame, game_id: str) -> None:
     biggest = data.sort_values("abs_swing", ascending=False).iloc[0]
     major_swings = int((data["abs_swing"] >= 10).sum())
     quarter_summary = data.groupby("period")["abs_swing"].sum().sort_values(ascending=False)
-    volatile_quarter = f"Q{int(quarter_summary.index[0])}" if not quarter_summary.empty and int(quarter_summary.index[0]) <= 4 else f"OT{int(quarter_summary.index[0]) - 4}"
+    volatile_period = int(quarter_summary.index[0])
+    volatile_quarter = f"Q{volatile_period}" if volatile_period <= 4 else f"OT{volatile_period - 4}"
 
     cards = [
         render_summary_card("Biggest Swing", f"{float(biggest['wp_swing_pct']):+.1f} pts", short_text(str(biggest["event_description"]), 110), big=True),
@@ -806,6 +932,59 @@ def show_model_evaluation(data: dict, champion: dict, game_id: str) -> None:
     st.dataframe(clean_table_columns(disagreements), width="stretch", hide_index=True)
 
 
+def extract_recap_section(recap: str, heading: str) -> str:
+    pattern = rf"^##\s+{re.escape(heading)}\s*$"
+    lines = recap.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if re.match(pattern, line.strip(), flags=re.IGNORECASE):
+            start = index + 1
+            break
+    if start is None:
+        return ""
+
+    end = len(lines)
+    for index in range(start, len(lines)):
+        if lines[index].startswith("## "):
+            end = index
+            break
+    section = " ".join(line.strip(" -*") for line in lines[start:end] if line.strip())
+    return section.strip()
+
+
+def show_game_recap(data: dict, game_id: str) -> None:
+    st.subheader("Game Recap")
+    render_html('<div class="tab-intro">A concise post-game read built from win probability, player impact, comeback context, and the champion model.</div>')
+    recap = data["recap"]
+    if recap.startswith("No recap file found"):
+        show_empty_report_card("Game Recap", f"python src/recap.py --game-id {game_id}")
+        return
+
+    sections = {
+        "Final Result": extract_recap_section(recap, "Final Result"),
+        "Biggest Turning Point": extract_recap_section(recap, "Biggest Turning Point"),
+        "Player Impact": extract_recap_section(recap, "Player Impact"),
+        "Comeback Reality": extract_recap_section(recap, "Comeback Reality"),
+        "Hidden Momentum": extract_recap_section(recap, "Hidden Momentum"),
+        "Model Note": extract_recap_section(recap, "Model Note"),
+    }
+    if not any(sections.values()):
+        sections["Final Result"] = short_text(recap.replace("#", ""), 360)
+
+    cards = [
+        render_info_card("Final Result", "Game Result", short_text(sections.get("Final Result") or "Final result summary not found.", 220), "🏀"),
+        render_info_card("Biggest Turning Point", "Key Swing", short_text(sections.get("Biggest Turning Point") or "Turning point summary not found.", 220), "📈"),
+        render_info_card("Player Impact", "Top Contributor", short_text(sections.get("Player Impact") or "Player impact summary not found.", 220), "🔥"),
+        render_info_card("Comeback Reality", "Pressure Read", short_text(sections.get("Comeback Reality") or "Comeback summary not found.", 220), "⏱"),
+        render_info_card("Hidden Momentum", "Flow Signal", short_text(sections.get("Hidden Momentum") or "Momentum summary not found.", 220), "↔"),
+        render_info_card("Model Note", "Champion Context", short_text(sections.get("Model Note") or "Model note not found.", 220), "CC"),
+    ]
+    render_html('<div class="recap-grid">' + "".join(cards) + '</div>')
+
+    with st.expander("Full recap text"):
+        st.markdown(recap)
+
+
 def main() -> None:
     apply_custom_css()
     champion = load_champion_metadata()
@@ -857,6 +1036,7 @@ def main() -> None:
             champion_view,
             chart_key="full_win_probability_chart",
         )
+        show_win_probability_story(data, predictions, home_team, away_team)
     with tab3:
         show_game_insights(data, selected_game_id)
     with tab4:
@@ -868,7 +1048,7 @@ def main() -> None:
     with tab7:
         show_model_evaluation(data, champion, selected_game_id)
     with tab8:
-        st.markdown(data["recap"])
+        show_game_recap(data, selected_game_id)
 
 
 if __name__ == "__main__":
