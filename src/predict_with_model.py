@@ -1,4 +1,5 @@
 from pathlib import Path
+import argparse
 
 import joblib
 import pandas as pd
@@ -34,7 +35,20 @@ def load_model():
     return joblib.load(model_path)
 
 
-def load_game_state() -> pd.DataFrame:
+def load_game_state(game_id: str | None = None) -> pd.DataFrame:
+    if game_id:
+        game_id = str(game_id).zfill(10)
+        input_path = PROCESSED_DIR / f"game_state_{game_id}.csv"
+
+        if not input_path.exists():
+            raise FileNotFoundError(
+                f"No game-state file found for game {game_id}. Run:\n"
+                f"python src/run_pipeline.py --game-id {game_id} --model ml"
+            )
+
+        print(f"Loading game-state file: {input_path}")
+        return pd.read_csv(input_path, dtype={"game_id": str})
+
     files = list(PROCESSED_DIR.glob("game_state_*.csv"))
 
     if not files:
@@ -43,7 +57,7 @@ def load_game_state() -> pd.DataFrame:
             "python src/game_state.py"
         )
 
-    input_path = files[0]
+    input_path = files[-1]
     print(f"Loading game-state file: {input_path}")
 
     return pd.read_csv(input_path, dtype={"game_id": str})
@@ -74,14 +88,31 @@ def add_ml_predictions(game_state: pd.DataFrame, model) -> pd.DataFrame:
     output["wp_change"] = output["home_win_prob"].diff().fillna(0)
     output["abs_wp_change"] = output["wp_change"].abs()
 
-    output["prediction_source"] = "ml_model"
+    output["prediction_source"] = "logistic_regression_model"
 
     return output
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate logistic regression ML win probability predictions."
+    )
+
+    parser.add_argument(
+        "--game-id",
+        type=str,
+        default=None,
+        help="Specific NBA game ID to predict, example: 0042300312.",
+    )
+
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+
     model = load_model()
-    game_state = load_game_state()
+    game_state = load_game_state(args.game_id)
 
     predictions = add_ml_predictions(game_state, model)
 
