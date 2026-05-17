@@ -17,19 +17,6 @@ REPORTS_DIR = Path("reports")
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-
-FEATURE_COLUMNS = [
-    "period",
-    "seconds_remaining",
-    "home_score",
-    "away_score",
-    "score_margin_home",
-    "abs_score_margin",
-    "total_score",
-    "is_4th_quarter",
-    "is_clutch_time",
-]
-
 TARGET_COLUMN = "home_won"
 
 
@@ -38,7 +25,11 @@ class WinProbabilityNeuralNetwork(nn.Module):
         super().__init__()
 
         self.network = nn.Sequential(
-            nn.Linear(input_size, 32),
+            nn.Linear(input_size, 64),
+            nn.ReLU(),
+            nn.Dropout(0.20),
+
+            nn.Linear(64, 32),
             nn.ReLU(),
             nn.Dropout(0.15),
 
@@ -54,16 +45,37 @@ class WinProbabilityNeuralNetwork(nn.Module):
         return self.network(x)
 
 
+def load_feature_columns() -> list[str]:
+    feature_path = PROCESSED_DIR / "model_feature_columns.txt"
+
+    if not feature_path.exists():
+        raise FileNotFoundError(
+            "Missing model feature list. Run:\n"
+            "python src/model_features.py"
+        )
+
+    feature_columns = [
+        line.strip()
+        for line in feature_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    if not feature_columns:
+        raise ValueError("Feature column list is empty.")
+
+    return feature_columns
+
+
 def load_training_data() -> pd.DataFrame:
-    input_path = PROCESSED_DIR / "training_dataset.csv"
+    input_path = PROCESSED_DIR / "model_training_dataset.csv"
 
     if not input_path.exists():
         raise FileNotFoundError(
-            "No training dataset found. Run:\n"
-            'python src/build_training_dataset.py --season 2023-24 --season-type "Regular Season" --max-games 100'
+            "No improved model training dataset found. Run:\n"
+            "python src/model_features.py"
         )
 
-    print(f"Loading training data from: {input_path}")
+    print(f"Loading improved training data from: {input_path}")
 
     data = pd.read_csv(input_path, dtype={"game_id": str})
 
@@ -73,8 +85,9 @@ def load_training_data() -> pd.DataFrame:
     return data
 
 
-def validate_training_data(data: pd.DataFrame) -> None:
-    required_columns = FEATURE_COLUMNS + [TARGET_COLUMN, "game_id"]
+def validate_training_data(data: pd.DataFrame, feature_columns: list[str]) -> None:
+    required_columns = feature_columns + [TARGET_COLUMN, "game_id"]
+
     missing = [col for col in required_columns if col not in data.columns]
 
     if missing:
@@ -111,11 +124,12 @@ def split_by_game(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 def prepare_tensors(
     train_data: pd.DataFrame,
     test_data: pd.DataFrame,
+    feature_columns: list[str],
 ) -> tuple[TensorDataset, torch.Tensor, torch.Tensor, StandardScaler]:
-    X_train = train_data[FEATURE_COLUMNS].astype(float)
+    X_train = train_data[feature_columns].astype(float)
     y_train = train_data[TARGET_COLUMN].astype(float)
 
-    X_test = test_data[FEATURE_COLUMNS].astype(float)
+    X_test = test_data[feature_columns].astype(float)
     y_test = test_data[TARGET_COLUMN].astype(float)
 
     scaler = StandardScaler()
@@ -136,14 +150,18 @@ def prepare_tensors(
 def train_neural_network(
     train_dataset: TensorDataset,
     input_size: int,
-    epochs: int = 75,
+    epochs: int = 100,
     batch_size: int = 128,
     learning_rate: float = 0.001,
 ) -> WinProbabilityNeuralNetwork:
     model = WinProbabilityNeuralNetwork(input_size=input_size)
 
     loss_function = nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=learning_rate,
+        weight_decay=0.0001,
+    )
 
     train_loader = DataLoader(
         train_dataset,
@@ -180,6 +198,7 @@ def evaluate_model(
     X_test: torch.Tensor,
     y_test: torch.Tensor,
     test_data: pd.DataFrame,
+    feature_columns: list[str],
 ) -> dict:
     model.eval()
 
@@ -191,6 +210,8 @@ def evaluate_model(
 
     metrics = {
         "model_type": "PyTorch Neural Network",
+        "dataset": "model_training_dataset.csv",
+        "feature_count": len(feature_columns),
         "test_rows": len(test_data),
         "test_games": test_data["game_id"].nunique(),
         "accuracy": round(accuracy_score(y_true, labels), 4),
@@ -209,23 +230,27 @@ def evaluate_model(
 def save_model_and_scaler(
     model: WinProbabilityNeuralNetwork,
     scaler: StandardScaler,
+    feature_columns: list[str],
 ) -> None:
     model_path = MODELS_DIR / "pytorch_win_probability_model.pt"
     scaler_path = MODELS_DIR / "pytorch_scaler.joblib"
+    feature_path = MODELS_DIR / "pytorch_model_features.txt"
 
     torch.save(
         {
             "model_state_dict": model.state_dict(),
-            "input_size": len(FEATURE_COLUMNS),
-            "feature_columns": FEATURE_COLUMNS,
+            "input_size": len(feature_columns),
+            "feature_columns": feature_columns,
         },
         model_path,
     )
 
     joblib.dump(scaler, scaler_path)
+    feature_path.write_text("\n".join(feature_columns), encoding="utf-8")
 
     print(f"Saved PyTorch model to: {model_path}")
     print(f"Saved PyTorch scaler to: {scaler_path}")
+    print(f"Saved PyTorch feature list to: {feature_path}")
 
 
 def save_metrics(metrics: dict) -> None:
@@ -244,25 +269,32 @@ def save_metrics(metrics: dict) -> None:
 def main() -> None:
     torch.manual_seed(42)
 
+    feature_columns = load_feature_columns()
     data = load_training_data()
-    validate_training_data(data)
+
+    validate_training_data(data, feature_columns)
 
     train_data, test_data = split_by_game(data)
 
     print("\nDataset summary:")
     print(f"Total rows: {len(data)}")
     print(f"Total games: {data['game_id'].nunique()}")
+    print(f"Feature count: {len(feature_columns)}")
     print(f"Train rows: {len(train_data)}")
     print(f"Train games: {train_data['game_id'].nunique()}")
     print(f"Test rows: {len(test_data)}")
     print(f"Test games: {test_data['game_id'].nunique()}")
 
-    train_dataset, X_test, y_test, scaler = prepare_tensors(train_data, test_data)
+    train_dataset, X_test, y_test, scaler = prepare_tensors(
+        train_data=train_data,
+        test_data=test_data,
+        feature_columns=feature_columns,
+    )
 
     model = train_neural_network(
         train_dataset=train_dataset,
-        input_size=len(FEATURE_COLUMNS),
-        epochs=75,
+        input_size=len(feature_columns),
+        epochs=100,
         batch_size=128,
         learning_rate=0.001,
     )
@@ -272,13 +304,19 @@ def main() -> None:
         X_test=X_test,
         y_test=y_test,
         test_data=test_data,
+        feature_columns=feature_columns,
     )
 
-    save_model_and_scaler(model, scaler)
+    save_model_and_scaler(
+        model=model,
+        scaler=scaler,
+        feature_columns=feature_columns,
+    )
+
     save_metrics(metrics)
 
     print("\nSuccess.")
-    print("Trained PyTorch neural network win-probability model.")
+    print("Retrained PyTorch neural network using improved features.")
 
 
 if __name__ == "__main__":
