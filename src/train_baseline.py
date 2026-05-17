@@ -4,6 +4,8 @@ import math
 
 import pandas as pd
 
+from ml_pipeline_utils import apply_terminal_state_overrides
+
 
 PROCESSED_DIR = Path("data/processed")
 REPORTS_DIR = Path("reports")
@@ -51,14 +53,7 @@ def add_baseline_predictions(game_state: pd.DataFrame) -> pd.DataFrame:
     output = game_state.copy()
 
     output["home_win_prob"] = output.apply(baseline_home_win_probability, axis=1)
-    output["away_win_prob"] = 1 - output["home_win_prob"]
-
-    output["home_win_prob_pct"] = (output["home_win_prob"] * 100).round(1)
-    output["away_win_prob_pct"] = (output["away_win_prob"] * 100).round(1)
-
-    output["wp_change"] = output["home_win_prob"].diff().fillna(0)
-    output["abs_wp_change"] = output["wp_change"].abs()
-
+    output = apply_terminal_state_overrides(output)
     output["prediction_source"] = "baseline_rule_model"
 
     return output
