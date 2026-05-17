@@ -1,9 +1,18 @@
 from pathlib import Path
+import json
+import sys
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from nba_api.stats.endpoints import boxscoresummaryv2
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.append(str(SRC_DIR))
+
+from champion_inference import get_prediction_file_prefix, load_champion_metadata
 
 
 PROCESSED_DIR = Path("data/processed")
@@ -12,107 +21,31 @@ REPORTS_DIR = Path("reports")
 HOME_COLOR = "#3B82F6"
 AWAY_COLOR = "#EF4444"
 
+MODE_LABELS = {
+    "baseline": "Baseline Model",
+    "logistic_regression": "ML Model",
+    "random_forest": "Advanced ML Model",
+    "pytorch_neural_network": "Neural Network Model",
+}
 
-st.set_page_config(
-    page_title="ClutchCast AI",
-    page_icon="🏀",
-    layout="wide",
-)
+MODE_FILES = {
+    "baseline": "baseline_predictions_{game_id}.csv",
+    "logistic_regression": "ml_predictions_{game_id}.csv",
+    "random_forest": "advanced_predictions_{game_id}.csv",
+    "pytorch_neural_network": "neural_predictions_{game_id}.csv",
+}
+
+st.set_page_config(page_title="ClutchCast AI", page_icon="🏀", layout="wide")
 
 
 def apply_custom_css() -> None:
     st.markdown(
         """
         <style>
-        .stApp {
-            background: radial-gradient(circle at top left, #111827 0%, #080B12 40%, #05070D 100%);
-            color: #F9FAFB;
-        }
-
-        [data-testid="stSidebar"] {
-            background-color: #070A12;
-            border-right: 1px solid #1F2937;
-        }
-
-        .main-title {
-            font-size: 2.6rem;
-            font-weight: 800;
-            letter-spacing: -0.04em;
-            margin-bottom: 0.2rem;
-        }
-
-        .subtitle {
-            color: #9CA3AF;
-            font-size: 1rem;
-            margin-bottom: 1.5rem;
-        }
-
-        .premium-card {
-            background: rgba(17, 24, 39, 0.92);
-            border: 1px solid #1F2937;
-            border-radius: 18px;
-            padding: 1.2rem 1.3rem;
-            box-shadow: 0 20px 45px rgba(0, 0, 0, 0.25);
-            margin-bottom: 1rem;
-        }
-
-        .team-pill-home {
-            display: inline-block;
-            background: rgba(59, 130, 246, 0.15);
-            color: #93C5FD;
-            border: 1px solid rgba(59, 130, 246, 0.35);
-            padding: 0.25rem 0.7rem;
-            border-radius: 999px;
-            font-weight: 700;
-        }
-
-        .team-pill-away {
-            display: inline-block;
-            background: rgba(239, 68, 68, 0.15);
-            color: #FCA5A5;
-            border: 1px solid rgba(239, 68, 68, 0.35);
-            padding: 0.25rem 0.7rem;
-            border-radius: 999px;
-            font-weight: 700;
-        }
-
-        div[data-testid="stMetric"] {
-            background: rgba(17, 24, 39, 0.9);
-            border: 1px solid #1F2937;
-            padding: 1rem;
-            border-radius: 16px;
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
-        }
-
-        div[data-testid="stMetricLabel"] {
-            color: #9CA3AF;
-        }
-
-        div[data-testid="stMetricValue"] {
-            color: #F9FAFB;
-        }
-
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 0.5rem;
-        }
-
-        .stTabs [data-baseweb="tab"] {
-            background: rgba(17, 24, 39, 0.8);
-            border: 1px solid #1F2937;
-            border-radius: 999px;
-            padding: 0.5rem 1rem;
-            color: #D1D5DB;
-        }
-
-        .stTabs [aria-selected="true"] {
-            background: linear-gradient(90deg, #2563EB, #7C3AED);
-            color: white;
-            border: 1px solid transparent;
-        }
-
-        h1, h2, h3 {
-            letter-spacing: -0.03em;
-        }
+        .stApp { background: #070A12; color: #F9FAFB; }
+        [data-testid="stSidebar"] { background-color: #080B12; border-right: 1px solid #1F2937; }
+        div[data-testid="stMetric"] { background: rgba(17,24,39,.9); border: 1px solid #1F2937; padding: 1rem; border-radius: 12px; }
+        h1, h2, h3 { letter-spacing: -0.03em; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -121,12 +54,10 @@ def apply_custom_css() -> None:
 
 def format_nba_clock(clock_value) -> str:
     clock = str(clock_value)
-
     if not clock.startswith("PT"):
         return clock
 
     clock = clock.replace("PT", "")
-
     minutes = 0
     seconds = 0
 
@@ -135,60 +66,45 @@ def format_nba_clock(clock_value) -> str:
         minutes = int(minutes_part)
 
     if "S" in clock:
-        seconds_part = clock.replace("S", "")
-        seconds = int(float(seconds_part))
+        seconds = float(clock.replace("S", ""))
 
-    return f"{minutes}:{seconds:02d}"
+    if seconds.is_integer():
+        return f"{minutes}:{int(seconds):02d}"
 
-
-def load_csv(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        st.error(f"Missing required file: `{path}`")
-        st.info("Run the project pipeline for this game and prediction mode first.")
-        st.stop()
-
-    return pd.read_csv(path, dtype={"game_id": str})
+    return f"{minutes}:{seconds:04.1f}"
 
 
 def get_available_game_ids() -> list[str]:
     game_ids = set()
-
-    for file in PROCESSED_DIR.glob("baseline_predictions_*.csv"):
-        game_ids.add(file.stem.replace("baseline_predictions_", ""))
-
-    for file in PROCESSED_DIR.glob("ml_predictions_*.csv"):
-        game_ids.add(file.stem.replace("ml_predictions_", ""))
-
-    for file in PROCESSED_DIR.glob("advanced_predictions_*.csv"):
-        game_ids.add(file.stem.replace("advanced_predictions_", ""))
-
-    for file in PROCESSED_DIR.glob("neural_predictions_*.csv"):
-        game_ids.add(file.stem.replace("neural_predictions_", ""))
-
+    for pattern in MODE_FILES.values():
+        prefix, suffix = pattern.split("{game_id}")
+        for file in PROCESSED_DIR.glob(pattern.format(game_id="*")):
+            game_ids.add(file.name.replace(prefix, "").replace(suffix, ""))
     return sorted(game_ids)
 
 
-def get_prediction_file(game_id: str, prediction_mode: str) -> Path:
-    if prediction_mode == "Neural Network Model":
-        return PROCESSED_DIR / f"neural_predictions_{game_id}.csv"
+def get_available_modes(game_id: str) -> list[str]:
+    return [
+        mode_key
+        for mode_key, pattern in MODE_FILES.items()
+        if (PROCESSED_DIR / pattern.format(game_id=game_id)).exists()
+    ]
 
-    if prediction_mode == "Advanced ML Model":
-        return PROCESSED_DIR / f"advanced_predictions_{game_id}.csv"
 
-    if prediction_mode == "ML Model":
-        return PROCESSED_DIR / f"ml_predictions_{game_id}.csv"
+def load_csv_if_exists(path: Path) -> pd.DataFrame:
+    if path.exists():
+        return pd.read_csv(path, dtype={"game_id": str})
+    return pd.DataFrame()
 
-    return PROCESSED_DIR / f"baseline_predictions_{game_id}.csv"
+
+def get_prediction_path(game_id: str, model_key: str) -> Path:
+    return PROCESSED_DIR / MODE_FILES[model_key].format(game_id=game_id)
 
 
 @st.cache_data(show_spinner=False)
 def get_team_labels(game_id: str) -> tuple[str, str]:
     try:
-        summary = boxscoresummaryv2.BoxScoreSummaryV2(
-            game_id=game_id,
-            timeout=30,
-        )
-
+        summary = boxscoresummaryv2.BoxScoreSummaryV2(game_id=game_id, timeout=30)
         try:
             line_score = summary.line_score.get_data_frame()
         except AttributeError:
@@ -198,60 +114,39 @@ def get_team_labels(game_id: str) -> tuple[str, str]:
             away_team = str(line_score.iloc[0]["TEAM_ABBREVIATION"])
             home_team = str(line_score.iloc[1]["TEAM_ABBREVIATION"])
             return home_team, away_team
-
     except Exception:
         pass
 
     return "Home", "Away"
 
 
-@st.cache_data
-def load_dashboard_data(game_id: str, prediction_mode: str) -> dict:
-    prediction_path = get_prediction_file(game_id, prediction_mode)
-    predictions = load_csv(prediction_path)
-
-    recap_path = REPORTS_DIR / f"post_game_recap_{game_id}.md"
-    recap = (
-        recap_path.read_text(encoding="utf-8")
-        if recap_path.exists()
-        else "No recap file found. Run the full pipeline first."
-    )
-
-    summary_path = REPORTS_DIR / f"model_comparison_summary_{game_id}.csv"
-    disagreements_path = REPORTS_DIR / f"model_disagreements_{game_id}.csv"
-
-    comparison_summary = (
-        pd.read_csv(summary_path, dtype={"game_id": str})
-        if summary_path.exists()
-        else pd.DataFrame()
-    )
-
-    model_disagreements = (
-        pd.read_csv(disagreements_path, dtype={"game_id": str})
-        if disagreements_path.exists()
-        else pd.DataFrame()
-    )
+def load_dashboard_data(game_id: str, model_key: str) -> dict:
+    prediction_path = get_prediction_path(game_id, model_key)
+    if not prediction_path.exists():
+        st.error(f"Missing prediction file: `{prediction_path}`")
+        st.info(f"Run `python src/run_pipeline.py --game-id {game_id} --model baseline|ml|advanced|neural`")
+        st.stop()
 
     return {
-        "predictions": predictions,
-        "recap": recap,
-        "comparison_summary": comparison_summary,
-        "model_disagreements": model_disagreements,
+        "predictions": pd.read_csv(prediction_path, dtype={"game_id": str}),
+        "comparison_summary": load_csv_if_exists(REPORTS_DIR / f"model_comparison_summary_{game_id}.csv"),
+        "model_disagreements": load_csv_if_exists(REPORTS_DIR / f"model_disagreements_{game_id}.csv"),
+        "leaderboard": load_csv_if_exists(REPORTS_DIR / "model_leaderboard.csv"),
+        "recap": (REPORTS_DIR / f"post_game_recap_{game_id}.md").read_text(encoding="utf-8")
+        if (REPORTS_DIR / f"post_game_recap_{game_id}.md").exists()
+        else "No recap file found. Run `python src/recap.py --game-id YOUR_GAME_ID`.",
     }
 
 
 def add_game_time_columns(df: pd.DataFrame) -> pd.DataFrame:
     output = df.copy()
-    total_game_seconds = 48 * 60
-    output["game_seconds_elapsed"] = total_game_seconds - output["seconds_remaining"]
-    output["game_minutes_elapsed"] = output["game_seconds_elapsed"] / 60
+    output["game_minutes_elapsed"] = ((48 * 60) - output["seconds_remaining"]) / 60
     output["Clock"] = output["clock"].apply(format_nba_clock)
     return output
 
 
 def clean_table_columns(df: pd.DataFrame) -> pd.DataFrame:
     display = df.copy()
-
     if "clock" in display.columns:
         display["clock"] = display["clock"].apply(format_nba_clock)
 
@@ -264,712 +159,217 @@ def clean_table_columns(df: pd.DataFrame) -> pd.DataFrame:
         "event_team": "Team",
         "event_player": "Player",
         "event_description": "Play Description",
+        "home_win_prob_pct": "Home Win Probability",
+        "away_win_prob_pct": "Away Win Probability",
         "wp_before_pct": "Win Prob. Before",
         "wp_after_pct": "Win Prob. After",
         "wp_swing_pct": "Win Prob. Swing",
         "rank": "Rank",
-        "total_raw_home_wp_swing_pct": "Net Home Win Prob. Swing",
-        "total_absolute_swing_pct": "Total Win Prob. Impact",
-        "avg_absolute_swing_pct": "Average Impact Per Event",
-        "event_count": "Events Tracked",
-        "home_win_prob_pct": "Home Win Probability",
-        "away_win_prob_pct": "Away Win Probability",
+        "model_name": "Model",
+        "brier_score": "Brier Score",
+        "log_loss": "Log Loss",
+        "roc_auc": "ROC-AUC",
+        "accuracy": "Accuracy",
         "baseline_home_win_prob_pct": "Baseline Home Win Probability",
         "logistic_ml_home_win_prob_pct": "Logistic ML Home Win Probability",
-        "advanced_ml_home_win_prob_pct": "Advanced ML Home Win Probability",
+        "advanced_ml_home_win_prob_pct": "Random Forest Home Win Probability",
         "neural_home_win_prob_pct": "Neural Network Home Win Probability",
-        "logistic_minus_baseline_pct": "Logistic - Baseline",
-        "advanced_minus_baseline_pct": "Advanced - Baseline",
-        "advanced_minus_logistic_pct": "Advanced - Logistic",
-        "neural_minus_baseline_pct": "Neural - Baseline",
-        "neural_minus_logistic_pct": "Neural - Logistic",
-        "neural_minus_advanced_pct": "Neural - Advanced",
         "max_model_disagreement_pct": "Max Model Disagreement",
-        "rows_compared": "Rows Compared",
-        "avg_logistic_vs_baseline_diff_pct": "Avg. Logistic vs Baseline",
-        "avg_advanced_vs_baseline_diff_pct": "Avg. Advanced vs Baseline",
-        "avg_advanced_vs_logistic_diff_pct": "Avg. Advanced vs Logistic",
-        "avg_neural_vs_baseline_diff_pct": "Avg. Neural vs Baseline",
-        "avg_neural_vs_logistic_diff_pct": "Avg. Neural vs Logistic",
-        "avg_neural_vs_advanced_diff_pct": "Avg. Neural vs Advanced",
-        "baseline_final_home_win_prob_pct": "Baseline Final Home Win Prob.",
-        "logistic_ml_final_home_win_prob_pct": "Logistic Final Home Win Prob.",
-        "advanced_ml_final_home_win_prob_pct": "Advanced Final Home Win Prob.",
-        "neural_final_home_win_prob_pct": "Neural Final Home Win Prob.",
-        "final_home_score": "Final Home Score",
-        "final_away_score": "Final Away Score",
-        "final_home_margin": "Final Home Margin",
-        "clutch_pressure": "Clutch Pressure",
-        "pressure_level": "Pressure Level",
-        "trailing_team": "Trailing Team",
-        "deficit": "Deficit",
-        "comeback_probability_pct": "Comeback Probability",
-        "comeback_status": "Comeback Status",
-        "required_points_per_minute": "Required Points/Min",
     }
-
     return display.rename(columns=rename_map)
 
 
-def show_header(home_team: str, away_team: str, prediction_mode: str) -> None:
-    st.markdown(
-        f"""
-        <div class="main-title">ClutchCast AI</div>
-        <div class="subtitle">
-            Premium NBA win probability, turning-point, momentum, and game-story engine.
-        </div>
-        <div style="margin-bottom: 1rem;">
-            <span class="team-pill-away">{away_team}</span>
-            <span style="color:#6B7280; margin: 0 0.5rem;">at</span>
-            <span class="team-pill-home">{home_team}</span>
-            <span style="color:#9CA3AF; margin-left: 1rem;">Mode: {prediction_mode}</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def show_header(home_team: str, away_team: str, model_label: str, champion_label: str) -> None:
+    st.title("ClutchCast AI")
+    st.caption("NBA win probability, turning points, player impact, comeback pressure, and model evaluation.")
+    st.markdown(f"**{away_team} at {home_team}** · Active view: `{model_label}` · Champion: `{champion_label}`")
 
 
-def show_game_summary(
-    predictions: pd.DataFrame,
-    home_team: str,
-    away_team: str,
-    prediction_mode: str,
-) -> None:
+def show_game_summary(predictions: pd.DataFrame, home_team: str, away_team: str, model_label: str) -> None:
     final_row = predictions.iloc[-1]
-
-    game_id = str(final_row["game_id"]).zfill(10)
     home_score = int(final_row["home_score"])
     away_score = int(final_row["away_score"])
-    margin = int(final_row["score_margin_home"])
-    home_wp = float(final_row["home_win_prob_pct"])
-    away_wp = float(final_row["away_win_prob_pct"])
-
-    if margin > 0:
-        result = f"{home_team} by {margin}"
-    elif margin < 0:
-        result = f"{away_team} by {abs(margin)}"
-    else:
-        result = "Tie"
+    margin = home_score - away_score
+    result = f"{home_team} by {margin}" if margin > 0 else f"{away_team} by {abs(margin)}" if margin < 0 else "Tie"
 
     col1, col2, col3, col4 = st.columns(4)
-
     col1.metric("Final Score", f"{home_team} {home_score} - {away_team} {away_score}")
     col2.metric("Result", result)
-    col3.metric(f"{home_team} Final Win Prob.", f"{home_wp:.1f}%")
-    col4.metric("Prediction Mode", prediction_mode)
-
-    st.caption(
-        f"Game ID: {game_id} · Events tracked: {len(predictions)} · "
-        f"{away_team} final win probability: {away_wp:.1f}%"
-    )
+    col3.metric(f"{home_team} Win Prob.", f"{float(final_row['home_win_prob_pct']):.1f}%")
+    col4.metric("Model", model_label)
 
 
-def show_win_probability_chart(
-    predictions: pd.DataFrame,
-    home_team: str,
-    away_team: str,
-) -> None:
-    st.subheader("Win Probability Timeline")
-
+def show_win_probability_chart(predictions: pd.DataFrame, home_team: str, away_team: str, champion_view: bool) -> None:
+    st.subheader("Champion Win Probability Timeline" if champion_view else "Win Probability Timeline")
     chart_data = add_game_time_columns(predictions)
-
     chart_data_long = chart_data.melt(
-        id_vars=[
-            "game_minutes_elapsed",
-            "period",
-            "Clock",
-            "home_score",
-            "away_score",
-            "score_margin_home",
-            "event_description",
-        ],
+        id_vars=["game_minutes_elapsed", "period", "Clock", "home_score", "away_score", "score_margin_home", "event_description"],
         value_vars=["home_win_prob_pct", "away_win_prob_pct"],
         var_name="team",
         value_name="win_probability_pct",
     )
-
-    chart_data_long["team"] = chart_data_long["team"].replace(
-        {
-            "home_win_prob_pct": home_team,
-            "away_win_prob_pct": away_team,
-        }
-    )
+    chart_data_long["team"] = chart_data_long["team"].replace({"home_win_prob_pct": home_team, "away_win_prob_pct": away_team})
 
     fig = px.line(
         chart_data_long,
         x="game_minutes_elapsed",
         y="win_probability_pct",
         color="team",
-        color_discrete_map={
-            home_team: HOME_COLOR,
-            away_team: AWAY_COLOR,
-        },
-        hover_data=[
-            "period",
-            "Clock",
-            "home_score",
-            "away_score",
-            "score_margin_home",
-            "event_description",
-        ],
-        labels={
-            "game_minutes_elapsed": "Game Time",
-            "win_probability_pct": "Win Probability (%)",
-            "team": "Team",
-            "period": "Quarter",
-            "home_score": "Home Score",
-            "away_score": "Away Score",
-            "score_margin_home": "Home Margin",
-            "event_description": "Play",
-        },
-        title=f"{away_team} at {home_team} · Win Probability",
+        color_discrete_map={home_team: HOME_COLOR, away_team: AWAY_COLOR},
+        hover_data=["period", "Clock", "home_score", "away_score", "score_margin_home", "event_description"],
+        labels={"game_minutes_elapsed": "Game Time", "win_probability_pct": "Win Probability (%)"},
     )
-
     fig.update_traces(line=dict(width=3))
-
-    fig.update_yaxes(
-        range=[0, 100],
-        gridcolor="#1F2937",
-        zeroline=False,
-    )
-
-    fig.update_xaxes(
-        gridcolor="#1F2937",
-        zeroline=False,
-    )
-
-    fig.add_hline(
-        y=50,
-        line_dash="dot",
-        line_color="#9CA3AF",
-        opacity=0.8,
-        annotation_text="50%",
-        annotation_position="right",
-    )
-
-    for minute, label in [(12, "End Q1"), (24, "Half"), (36, "End Q3"), (48, "Final")]:
-        fig.add_vline(
-            x=minute,
-            line_dash="dash",
-            line_color="#6B7280",
-            opacity=0.45,
-            annotation_text=label,
-            annotation_position="top",
-        )
-
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="#0B1020",
-        hovermode="x unified",
-        legend_title_text="",
-        margin=dict(l=20, r=20, t=60, b=20),
-        height=430,
-    )
-
+    fig.update_yaxes(range=[0, 100], gridcolor="#1F2937")
+    fig.update_xaxes(gridcolor="#1F2937")
+    fig.add_hline(y=50, line_dash="dot", line_color="#9CA3AF")
+    fig.update_layout(template="plotly_dark", plot_bgcolor="#0B1020", paper_bgcolor="rgba(0,0,0,0)", hovermode="x unified", height=430)
     st.plotly_chart(fig, width="stretch")
 
 
 def build_turning_points(predictions: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     data = predictions.copy()
-
-    data["wp_before_pct"] = (
-        data["home_win_prob"].shift(1).fillna(data["home_win_prob"]) * 100
-    ).round(1)
-
+    data["wp_before_pct"] = (data["home_win_prob"].shift(1).fillna(data["home_win_prob"]) * 100).round(1)
     data["wp_after_pct"] = data["home_win_prob_pct"]
     data["wp_swing_pct"] = (data["wp_after_pct"] - data["wp_before_pct"]).round(1)
-
-    data = data[data["abs_wp_change"] > 0]
-    data = data.sort_values("abs_wp_change", ascending=False).head(top_n)
-
-    columns = [
-        "period",
-        "clock",
-        "home_score",
-        "away_score",
-        "score_margin_home",
-        "event_team",
-        "event_player",
-        "event_description",
-        "wp_before_pct",
-        "wp_after_pct",
-        "wp_swing_pct",
-    ]
-
-    return data[columns].reset_index(drop=True)
+    return data.sort_values("abs_wp_change", ascending=False).head(top_n)[[
+        "period", "clock", "home_score", "away_score", "score_margin_home", "event_team", "event_player", "event_description", "wp_before_pct", "wp_after_pct", "wp_swing_pct"
+    ]]
 
 
 def build_player_impact(predictions: pd.DataFrame) -> pd.DataFrame:
-    data = predictions.copy()
-
-    data = data[data["event_player"].notna()]
-    data = data[data["event_player"].astype(str).str.strip() != ""]
-
+    data = predictions[predictions["event_player"].fillna("").astype(str).str.strip() != ""].copy()
     data["positive_swing_pct"] = (data["wp_change"] * 100).round(2)
     data["absolute_swing_pct"] = (data["abs_wp_change"] * 100).round(2)
-
-    grouped = (
-        data.groupby(["event_player", "event_team"], as_index=False)
-        .agg(
-            total_raw_home_wp_swing_pct=("positive_swing_pct", "sum"),
-            total_absolute_swing_pct=("absolute_swing_pct", "sum"),
-            avg_absolute_swing_pct=("absolute_swing_pct", "mean"),
-            event_count=("event_player", "count"),
-        )
+    grouped = data.groupby(["event_player", "event_team"], as_index=False).agg(
+        total_raw_home_wp_swing_pct=("positive_swing_pct", "sum"),
+        total_absolute_swing_pct=("absolute_swing_pct", "sum"),
+        avg_absolute_swing_pct=("absolute_swing_pct", "mean"),
+        event_count=("event_player", "count"),
     )
-
-    grouped["total_raw_home_wp_swing_pct"] = grouped[
-        "total_raw_home_wp_swing_pct"
-    ].round(2)
-    grouped["total_absolute_swing_pct"] = grouped[
-        "total_absolute_swing_pct"
-    ].round(2)
-    grouped["avg_absolute_swing_pct"] = grouped[
-        "avg_absolute_swing_pct"
-    ].round(2)
-
-    grouped = grouped.sort_values("total_absolute_swing_pct", ascending=False)
+    grouped = grouped.round(2).sort_values("total_absolute_swing_pct", ascending=False).reset_index(drop=True)
     grouped.insert(0, "rank", range(1, len(grouped) + 1))
-
-    return grouped.reset_index(drop=True)
+    return grouped
 
 
 def calculate_clutch_pressure(df: pd.DataFrame) -> pd.DataFrame:
     output = df.copy()
-
-    total_game_seconds = 48 * 60
-    elapsed_ratio = 1 - (output["seconds_remaining"] / total_game_seconds)
-    elapsed_ratio = elapsed_ratio.clip(0, 1)
-
+    elapsed_ratio = (1 - (output["seconds_remaining"] / (48 * 60))).clip(0, 1)
     closeness = (1 - (output["abs_score_margin"] / 20)).clip(0, 1)
     uncertainty = 1 - ((output["home_win_prob"] - 0.5).abs() / 0.5).clip(0, 1)
-
-    output["clutch_pressure"] = (
-        (0.40 * closeness + 0.35 * elapsed_ratio + 0.25 * uncertainty) * 100
-    ).round(1)
-
-    output["pressure_level"] = pd.cut(
-        output["clutch_pressure"],
-        bins=[-1, 25, 50, 75, 100],
-        labels=["Low", "Medium", "High", "Extreme"],
-    )
-
+    output["clutch_pressure"] = ((0.40 * closeness + 0.35 * elapsed_ratio + 0.25 * uncertainty) * 100).round(1)
+    output["pressure_level"] = pd.cut(output["clutch_pressure"], bins=[-1, 25, 50, 75, 100], labels=["Low", "Medium", "High", "Extreme"])
     return output
 
 
 def build_comeback_report(predictions: pd.DataFrame) -> pd.DataFrame:
     data = calculate_clutch_pressure(predictions)
-
     data["trailing_team"] = "Tie"
     data.loc[data["score_margin_home"] < 0, "trailing_team"] = "Home"
     data.loc[data["score_margin_home"] > 0, "trailing_team"] = "Away"
-
     data["deficit"] = data["score_margin_home"].abs()
-
     data["comeback_probability"] = 0.5
     data.loc[data["score_margin_home"] < 0, "comeback_probability"] = data["home_win_prob"]
     data.loc[data["score_margin_home"] > 0, "comeback_probability"] = data["away_win_prob"]
-
     data["comeback_probability_pct"] = (data["comeback_probability"] * 100).round(1)
-
-    def status(probability: float) -> str:
-        if probability >= 0.40:
-            return "Very realistic"
-        if probability >= 0.25:
-            return "Possible"
-        if probability >= 0.10:
-            return "Difficult"
-        if probability >= 0.03:
-            return "Very unlikely"
-        return "Nearly impossible"
-
-    data["comeback_status"] = data["comeback_probability"].apply(status)
-
-    data["required_points_per_minute"] = data.apply(
-        lambda row: round(
-            row["deficit"] / max(row["seconds_remaining"] / 60, 0.01), 2
-        )
-        if row["deficit"] > 0
-        else 0.0,
-        axis=1,
-    )
-
-    comeback_rows = data[
-        (data["trailing_team"] != "Tie")
-        & (data["seconds_remaining"] > 0)
-        & (data["deficit"] >= 5)
-    ].copy()
-
-    if comeback_rows.empty:
+    data["required_points_per_minute"] = data.apply(lambda row: round(row["deficit"] / max(row["seconds_remaining"] / 60, 0.01), 2) if row["deficit"] > 0 else 0, axis=1)
+    data["comeback_status"] = pd.cut(data["comeback_probability"], bins=[-1, .03, .10, .25, .40, 1], labels=["Nearly impossible", "Very unlikely", "Difficult", "Possible", "Very realistic"])
+    rows = data[(data["trailing_team"] != "Tie") & (data["seconds_remaining"] > 0) & (data["deficit"] >= 5)].copy()
+    if rows.empty:
         return pd.DataFrame()
-
-    comeback_rows["interest_score"] = (
-        comeback_rows["deficit"] * 0.45
-        + comeback_rows["clutch_pressure"] * 0.35
-        + comeback_rows["comeback_probability_pct"] * 0.20
-    )
-
-    columns = [
-        "period",
-        "clock",
-        "home_score",
-        "away_score",
-        "trailing_team",
-        "deficit",
-        "comeback_probability_pct",
-        "comeback_status",
-        "required_points_per_minute",
-        "clutch_pressure",
-        "pressure_level",
-        "event_description",
-    ]
-
-    return (
-        comeback_rows.sort_values("interest_score", ascending=False)[columns]
-        .head(10)
-        .reset_index(drop=True)
-    )
+    rows["interest_score"] = rows["deficit"] * .45 + rows["clutch_pressure"] * .35 + rows["comeback_probability_pct"] * .20
+    return rows.sort_values("interest_score", ascending=False).head(10)[[
+        "period", "clock", "home_score", "away_score", "trailing_team", "deficit", "comeback_probability_pct", "comeback_status", "required_points_per_minute", "clutch_pressure", "pressure_level", "event_description"
+    ]]
 
 
-def show_turning_points(predictions: pd.DataFrame) -> None:
-    st.subheader("Turning Points")
-    st.caption("The plays that created the largest win-probability swings.")
+def show_model_evaluation(data: dict, champion: dict) -> None:
+    st.subheader("Model Evaluation")
+    st.caption("Champion selection ranks models by lowest Brier score, then lowest log loss, highest ROC-AUC, and highest accuracy.")
 
-    turning_points = build_turning_points(predictions)
+    leaderboard = data["leaderboard"]
+    if leaderboard.empty:
+        st.warning("Model leaderboard was not found.")
+        st.code("python src/compare_models.py --leaderboard", language="powershell")
+    else:
+        champion_key = champion.get("model_key")
+        display = leaderboard.copy()
+        display["Champion"] = display["model_key"].eq(champion_key).map({True: "Yes", False: ""})
+        st.dataframe(clean_table_columns(display), width="stretch", hide_index=True)
 
-    st.dataframe(
-        clean_table_columns(turning_points),
-        width="stretch",
-        hide_index=True,
-    )
-
-
-def show_player_impact(
-    predictions: pd.DataFrame,
-    home_team: str,
-    away_team: str,
-) -> None:
-    st.subheader("Player Impact")
-    st.caption("Players ranked by how much their events moved win probability.")
-
-    player_impact = build_player_impact(predictions)
-    top_10 = player_impact.head(10)
-
-    fig = px.bar(
-        top_10,
-        x="event_player",
-        y="total_absolute_swing_pct",
-        color="event_team",
-        color_discrete_map={
-            home_team: HOME_COLOR,
-            away_team: AWAY_COLOR,
-        },
-        hover_data=["event_team", "event_count", "avg_absolute_swing_pct"],
-        labels={
-            "event_player": "Player",
-            "total_absolute_swing_pct": "Total Win Probability Impact",
-            "event_team": "Team",
-            "event_count": "Events Tracked",
-            "avg_absolute_swing_pct": "Average Impact Per Event",
-        },
-        title="Top Player Win Probability Impact",
-    )
-
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="#0B1020",
-        margin=dict(l=20, r=20, t=60, b=20),
-        height=420,
-        legend_title_text="Team",
-    )
-
-    st.plotly_chart(fig, width="stretch")
-
-    st.dataframe(
-        clean_table_columns(player_impact),
-        width="stretch",
-        hide_index=True,
-    )
-
-
-def show_clutch_pressure(predictions: pd.DataFrame) -> None:
-    st.subheader("Clutch Pressure")
-    st.caption("High-pressure moments based on score closeness, time, and win-probability uncertainty.")
-
-    features = calculate_clutch_pressure(predictions)
-    features_with_time = add_game_time_columns(features)
-
-    fig = px.scatter(
-        features_with_time,
-        x="game_minutes_elapsed",
-        y="clutch_pressure",
-        color="pressure_level",
-        size="clutch_pressure",
-        hover_data=[
-            "period",
-            "Clock",
-            "home_score",
-            "away_score",
-            "score_margin_home",
-            "home_win_prob_pct",
-            "event_description",
-        ],
-        labels={
-            "game_minutes_elapsed": "Game Time",
-            "clutch_pressure": "Clutch Pressure",
-            "pressure_level": "Pressure Level",
-            "period": "Quarter",
-            "home_score": "Home Score",
-            "away_score": "Away Score",
-            "score_margin_home": "Home Margin",
-            "home_win_prob_pct": "Home Win Probability",
-            "event_description": "Play",
-        },
-        title="Clutch Pressure Timeline",
-    )
-
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="#0B1020",
-        margin=dict(l=20, r=20, t=60, b=20),
-        height=430,
-    )
-
-    st.plotly_chart(fig, width="stretch")
-
-    columns = [
-        "period",
-        "clock",
-        "home_score",
-        "away_score",
-        "score_margin_home",
-        "home_win_prob_pct",
-        "clutch_pressure",
-        "pressure_level",
-        "event_description",
-    ]
-
-    display = features.sort_values("clutch_pressure", ascending=False)[columns].head(15)
-
-    st.dataframe(
-        clean_table_columns(display),
-        width="stretch",
-        hide_index=True,
-    )
-
-
-def show_comeback_meter(predictions: pd.DataFrame) -> None:
-    st.subheader("Comeback Reality")
-    st.caption("Moments where the trailing team had a comeback scenario worth analyzing.")
-
-    comeback_report = build_comeback_report(predictions)
-
-    st.dataframe(
-        clean_table_columns(comeback_report),
-        width="stretch",
-        hide_index=True,
-    )
-
-
-def show_model_comparison(
-    comparison_summary: pd.DataFrame,
-    model_disagreements: pd.DataFrame,
-) -> None:
-    st.subheader("Model Comparison")
-    st.caption("Compares the baseline, logistic regression, advanced random forest, and PyTorch neural network models.")
-
-    if comparison_summary.empty or model_disagreements.empty:
-        st.warning("Four-model comparison files were not found for this game yet.")
-        st.info("Run: `python src/compare_models.py --game-id YOUR_GAME_ID`")
+    summary = data["comparison_summary"]
+    disagreements = data["model_disagreements"]
+    if summary.empty or disagreements.empty:
+        st.warning("Per-game four-model comparison files were not found.")
+        st.code("python src/compare_models.py --game-id YOUR_GAME_ID", language="powershell")
         return
 
-    summary = comparison_summary.iloc[0]
-
-    if "avg_neural_vs_baseline_diff_pct" not in summary.index:
-        st.warning("This comparison file does not include the neural network yet.")
-        st.info("Re-run: `python src/compare_models.py --game-id YOUR_GAME_ID`")
-        return
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    col1.metric(
-        "Logistic vs Baseline",
-        f"{float(summary['avg_logistic_vs_baseline_diff_pct']):.1f}%",
-    )
-    col2.metric(
-        "Advanced vs Baseline",
-        f"{float(summary['avg_advanced_vs_baseline_diff_pct']):.1f}%",
-    )
-    col3.metric(
-        "Neural vs Baseline",
-        f"{float(summary['avg_neural_vs_baseline_diff_pct']):.1f}%",
-    )
-    col4.metric(
-        "Max Disagreement",
-        f"{float(summary['max_model_disagreement_pct']):.1f}%",
-    )
-
-    st.markdown("### Final Home Win Probability by Model")
-
-    final_cols = st.columns(4)
-
-    final_cols[0].metric(
-        "Baseline",
-        f"{float(summary['baseline_final_home_win_prob_pct']):.1f}%",
-    )
-    final_cols[1].metric(
-        "Logistic ML",
-        f"{float(summary['logistic_ml_final_home_win_prob_pct']):.1f}%",
-    )
-    final_cols[2].metric(
-        "Advanced ML",
-        f"{float(summary['advanced_ml_final_home_win_prob_pct']):.1f}%",
-    )
-    final_cols[3].metric(
-        "Neural Network",
-        f"{float(summary['neural_final_home_win_prob_pct']):.1f}%",
-    )
+    row = summary.iloc[0]
+    cols = st.columns(4)
+    for col, label, field in [
+        (cols[0], "Baseline", "baseline_final_home_win_prob_pct"),
+        (cols[1], "Logistic", "logistic_ml_final_home_win_prob_pct"),
+        (cols[2], "Random Forest", "advanced_ml_final_home_win_prob_pct"),
+        (cols[3], "Neural Net", "neural_final_home_win_prob_pct"),
+    ]:
+        col.metric(label, f"{float(row[field]):.1f}%")
 
     st.markdown("### Biggest Model Disagreement Moments")
-
-    display = clean_table_columns(model_disagreements)
-
-    st.dataframe(
-        display,
-        width="stretch",
-        hide_index=True,
-    )
-
-
-def show_recap(
-    recap: str,
-    predictions: pd.DataFrame,
-    home_team: str,
-    away_team: str,
-) -> None:
-    st.subheader("Auto Game Recap")
-
-    final_row = predictions.iloc[-1]
-    home_score = int(final_row["home_score"])
-    away_score = int(final_row["away_score"])
-
-    col1, col2 = st.columns([1, 3])
-
-    with col1:
-        st.metric(home_team, home_score)
-        st.metric(away_team, away_score)
-
-    with col2:
-        word_count = len(recap.split())
-        read_time = max(1, round(word_count / 200))
-        st.caption(f"{word_count} words · ~{read_time} min read")
-        st.markdown(
-            f"""
-            <div class="premium-card">
-            {recap}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    st.dataframe(clean_table_columns(disagreements), width="stretch", hide_index=True)
 
 
 def main() -> None:
     apply_custom_css()
+    champion = load_champion_metadata()
+    champion_key = champion.get("model_key", "baseline")
+    champion_label = champion.get("model_name", MODE_LABELS.get(champion_key, "Baseline Model"))
 
     available_game_ids = get_available_game_ids()
-
     if not available_game_ids:
         st.error("No analyzed games found.")
-        st.info("Run `python src/run_pipeline.py --game-id YOUR_GAME_ID` first.")
+        st.code("python src/run_pipeline.py --game-id YOUR_GAME_ID --model baseline", language="powershell")
         st.stop()
 
     with st.sidebar:
-        st.markdown("## 🏀 ClutchCast AI")
-        st.caption("Premium NBA game intelligence engine")
+        st.markdown("## ClutchCast AI")
+        selected_game_id = st.selectbox("Analyzed game", available_game_ids, index=len(available_game_ids) - 1)
+        available_modes = get_available_modes(selected_game_id)
+        default_mode = champion_key if champion_key in available_modes else available_modes[-1]
+        st.markdown(f"**Champion Model:** {champion_label}")
+        st.caption("Main dashboard defaults to the champion when its prediction file exists.")
+        advanced = st.checkbox("Inspect another model")
+        if advanced:
+            model_key = st.selectbox("Model view", available_modes, index=available_modes.index(default_mode), format_func=lambda key: MODE_LABELS[key])
+        else:
+            model_key = default_mode
         st.divider()
+        st.caption("Generate champion report with `python src/compare_models.py --leaderboard`.")
 
-        selected_game_id = st.selectbox(
-            "Select analyzed game",
-            available_game_ids,
-            index=len(available_game_ids) - 1,
-        )
-
-        available_modes = []
-
-        if (PROCESSED_DIR / f"baseline_predictions_{selected_game_id}.csv").exists():
-            available_modes.append("Baseline Model")
-
-        if (PROCESSED_DIR / f"ml_predictions_{selected_game_id}.csv").exists():
-            available_modes.append("ML Model")
-
-        if (PROCESSED_DIR / f"advanced_predictions_{selected_game_id}.csv").exists():
-            available_modes.append("Advanced ML Model")
-
-        if (PROCESSED_DIR / f"neural_predictions_{selected_game_id}.csv").exists():
-            available_modes.append("Neural Network Model")
-
-        prediction_mode = st.selectbox(
-            "Prediction mode",
-            available_modes,
-            index=len(available_modes) - 1,
-        )
-
-    data = load_dashboard_data(selected_game_id, prediction_mode)
-
+    data = load_dashboard_data(selected_game_id, model_key)
     predictions = data["predictions"]
-    recap = data["recap"]
-    comparison_summary = data["comparison_summary"]
-    model_disagreements = data["model_disagreements"]
+    home_team, away_team = get_team_labels(selected_game_id)
+    model_label = MODE_LABELS.get(model_key, model_key)
 
-    game_id = str(predictions["game_id"].iloc[0]).zfill(10)
-    home_team, away_team = get_team_labels(game_id)
+    show_header(home_team, away_team, model_label, champion_label)
+    show_game_summary(predictions, home_team, away_team, model_label)
+    show_win_probability_chart(predictions, home_team, away_team, champion_view=(model_key == champion_key))
 
-    with st.sidebar:
-        st.divider()
-        st.markdown(f"**Matchup:** {away_team} at {home_team}")
-        st.markdown(f"**Game ID:** `{game_id}`")
-        st.markdown(f"**Mode:** `{prediction_mode}`")
-        st.divider()
-        st.caption("Baseline = rule-based formula")
-        st.caption("ML Model = logistic regression")
-        st.caption("Advanced ML = random forest model")
-        st.caption("Neural Network = PyTorch model")
-
-    show_header(home_team, away_team, prediction_mode)
-    show_game_summary(predictions, home_team, away_team, prediction_mode)
-    show_win_probability_chart(predictions, home_team, away_team)
-
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        [
-            "Turning Points",
-            "Player Impact",
-            "Clutch Pressure",
-            "Comeback Reality",
-            "Model Comparison",
-            "Game Recap",
-        ]
-    )
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Turning Points", "Player Impact", "Clutch Pressure", "Comeback Reality", "Model Evaluation", "Game Recap"
+    ])
 
     with tab1:
-        show_turning_points(predictions)
-
+        st.dataframe(clean_table_columns(build_turning_points(predictions)), width="stretch", hide_index=True)
     with tab2:
-        show_player_impact(predictions, home_team, away_team)
-
+        st.dataframe(clean_table_columns(build_player_impact(predictions)), width="stretch", hide_index=True)
     with tab3:
-        show_clutch_pressure(predictions)
-
+        st.dataframe(clean_table_columns(calculate_clutch_pressure(predictions).sort_values("clutch_pressure", ascending=False).head(15)), width="stretch", hide_index=True)
     with tab4:
-        show_comeback_meter(predictions)
-
+        st.dataframe(clean_table_columns(build_comeback_report(predictions)), width="stretch", hide_index=True)
     with tab5:
-        show_model_comparison(comparison_summary, model_disagreements)
-
+        show_model_evaluation(data, champion)
     with tab6:
-        show_recap(recap, predictions, home_team, away_team)
+        st.markdown(data["recap"])
 
 
 if __name__ == "__main__":
