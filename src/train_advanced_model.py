@@ -14,32 +14,40 @@ REPORTS_DIR = Path("reports")
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-
-FEATURE_COLUMNS = [
-    "period",
-    "seconds_remaining",
-    "home_score",
-    "away_score",
-    "score_margin_home",
-    "abs_score_margin",
-    "total_score",
-    "is_4th_quarter",
-    "is_clutch_time",
-]
-
 TARGET_COLUMN = "home_won"
 
 
+def load_feature_columns() -> list[str]:
+    feature_path = PROCESSED_DIR / "model_feature_columns.txt"
+
+    if not feature_path.exists():
+        raise FileNotFoundError(
+            "Missing model feature list. Run:\n"
+            "python src/model_features.py"
+        )
+
+    feature_columns = [
+        line.strip()
+        for line in feature_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    if not feature_columns:
+        raise ValueError("Feature column list is empty.")
+
+    return feature_columns
+
+
 def load_training_data() -> pd.DataFrame:
-    input_path = PROCESSED_DIR / "training_dataset.csv"
+    input_path = PROCESSED_DIR / "model_training_dataset.csv"
 
     if not input_path.exists():
         raise FileNotFoundError(
-            "No training dataset found. Run:\n"
-            'python src/build_training_dataset.py --season 2023-24 --season-type "Regular Season" --max-games 100'
+            "No improved model training dataset found. Run:\n"
+            "python src/model_features.py"
         )
 
-    print(f"Loading training data from: {input_path}")
+    print(f"Loading improved training data from: {input_path}")
 
     data = pd.read_csv(input_path, dtype={"game_id": str})
 
@@ -49,8 +57,9 @@ def load_training_data() -> pd.DataFrame:
     return data
 
 
-def validate_training_data(data: pd.DataFrame) -> None:
-    required_columns = FEATURE_COLUMNS + [TARGET_COLUMN, "game_id"]
+def validate_training_data(data: pd.DataFrame, feature_columns: list[str]) -> None:
+    required_columns = feature_columns + [TARGET_COLUMN, "game_id"]
+
     missing = [col for col in required_columns if col not in data.columns]
 
     if missing:
@@ -59,7 +68,7 @@ def validate_training_data(data: pd.DataFrame) -> None:
     if data[TARGET_COLUMN].nunique() < 2:
         raise ValueError(
             "Training data only has one target class. "
-            "Build a bigger dataset with both home wins and home losses."
+            "Build a larger dataset with both home wins and home losses."
         )
 
 
@@ -84,14 +93,17 @@ def split_by_game(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return train_data, test_data
 
 
-def train_advanced_model(train_data: pd.DataFrame) -> RandomForestClassifier:
-    X_train = train_data[FEATURE_COLUMNS]
+def train_advanced_model(
+    train_data: pd.DataFrame,
+    feature_columns: list[str],
+) -> RandomForestClassifier:
+    X_train = train_data[feature_columns]
     y_train = train_data[TARGET_COLUMN]
 
     model = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=12,
-        min_samples_leaf=20,
+        n_estimators=500,
+        max_depth=14,
+        min_samples_leaf=15,
         random_state=42,
         n_jobs=-1,
         class_weight="balanced",
@@ -102,8 +114,12 @@ def train_advanced_model(train_data: pd.DataFrame) -> RandomForestClassifier:
     return model
 
 
-def evaluate_model(model: RandomForestClassifier, test_data: pd.DataFrame) -> dict:
-    X_test = test_data[FEATURE_COLUMNS]
+def evaluate_model(
+    model: RandomForestClassifier,
+    test_data: pd.DataFrame,
+    feature_columns: list[str],
+) -> dict:
+    X_test = test_data[feature_columns]
     y_test = test_data[TARGET_COLUMN]
 
     predicted_labels = model.predict(X_test)
@@ -111,6 +127,8 @@ def evaluate_model(model: RandomForestClassifier, test_data: pd.DataFrame) -> di
 
     metrics = {
         "model_type": "RandomForestClassifier",
+        "dataset": "model_training_dataset.csv",
+        "feature_count": len(feature_columns),
         "test_rows": len(test_data),
         "test_games": test_data["game_id"].nunique(),
         "accuracy": round(accuracy_score(y_test, predicted_labels), 4),
@@ -126,15 +144,20 @@ def evaluate_model(model: RandomForestClassifier, test_data: pd.DataFrame) -> di
     return metrics
 
 
-def save_model(model: RandomForestClassifier) -> None:
+def save_model(model: RandomForestClassifier, feature_columns: list[str]) -> None:
     output_path = MODELS_DIR / "advanced_win_probability_model.joblib"
+    metadata_path = MODELS_DIR / "advanced_win_probability_model_features.txt"
+
     joblib.dump(model, output_path)
+    metadata_path.write_text("\n".join(feature_columns), encoding="utf-8")
 
     print(f"Saved advanced model to: {output_path}")
+    print(f"Saved advanced model feature list to: {metadata_path}")
 
 
 def save_metrics(metrics: dict) -> None:
     output_path = REPORTS_DIR / "advanced_model_metrics.csv"
+
     metrics_df = pd.DataFrame([metrics])
     metrics_df.to_csv(output_path, index=False)
 
@@ -144,10 +167,13 @@ def save_metrics(metrics: dict) -> None:
         print(f"{key}: {value}")
 
 
-def save_feature_importance(model: RandomForestClassifier) -> None:
+def save_feature_importance(
+    model: RandomForestClassifier,
+    feature_columns: list[str],
+) -> None:
     importance = pd.DataFrame(
         {
-            "feature": FEATURE_COLUMNS,
+            "feature": feature_columns,
             "importance": model.feature_importances_,
         }
     ).sort_values("importance", ascending=False)
@@ -156,33 +182,36 @@ def save_feature_importance(model: RandomForestClassifier) -> None:
     importance.to_csv(output_path, index=False)
 
     print(f"Saved advanced model feature importance to: {output_path}")
-    print("\nAdvanced model feature importance:")
-    print(importance)
+    print("\nTop advanced model feature importance:")
+    print(importance.head(15).to_string(index=False))
 
 
 def main() -> None:
+    feature_columns = load_feature_columns()
     data = load_training_data()
-    validate_training_data(data)
+
+    validate_training_data(data, feature_columns)
 
     train_data, test_data = split_by_game(data)
 
     print("\nDataset summary:")
     print(f"Total rows: {len(data)}")
     print(f"Total games: {data['game_id'].nunique()}")
+    print(f"Feature count: {len(feature_columns)}")
     print(f"Train rows: {len(train_data)}")
     print(f"Train games: {train_data['game_id'].nunique()}")
     print(f"Test rows: {len(test_data)}")
     print(f"Test games: {test_data['game_id'].nunique()}")
 
-    model = train_advanced_model(train_data)
-    metrics = evaluate_model(model, test_data)
+    model = train_advanced_model(train_data, feature_columns)
+    metrics = evaluate_model(model, test_data, feature_columns)
 
-    save_model(model)
+    save_model(model, feature_columns)
     save_metrics(metrics)
-    save_feature_importance(model)
+    save_feature_importance(model, feature_columns)
 
     print("\nSuccess.")
-    print("Trained advanced ML win-probability model.")
+    print("Retrained advanced random forest model using improved features.")
 
 
 if __name__ == "__main__":
