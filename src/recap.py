@@ -76,6 +76,29 @@ def load_csv(folder: Path, pattern: str, game_id: str | None = None) -> pd.DataF
     return pd.read_csv(path, dtype={"game_id": str})
 
 
+def filter_ranked_report(df: pd.DataFrame, require_player_team: bool = False) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    keep = pd.Series(True, index=df.index)
+
+    if "seconds_remaining" in df.columns:
+        keep = keep & (df["seconds_remaining"] > 0)
+
+    if "event_description" in df.columns:
+        description = df["event_description"].fillna("").astype(str).str.lower()
+        keep = keep & ~description.str.contains("end of", regex=False)
+        keep = keep & ~description.str.contains("instant replay", regex=False)
+
+    if require_player_team:
+        for column in ["event_team", "event_player"]:
+            if column in df.columns:
+                values = df[column].fillna("").astype(str).str.strip()
+                keep = keep & (values != "")
+
+    return df[keep].reset_index(drop=True)
+
+
 def prediction_label_from_key(model_key: str, fallback: str) -> str:
     labels = {
         "baseline": "baseline rule model",
@@ -152,10 +175,10 @@ def build_recap(
     away_score = int(final_row["away_score"])
 
     result_sentence = describe_result(home_team, away_team, home_score, away_score)
-    top_turning_point = first_or_none(turning_points)
-    top_player = first_or_none(player_impact)
+    top_turning_point = first_or_none(filter_ranked_report(turning_points, require_player_team=True))
+    top_player = first_or_none(filter_ranked_report(player_impact, require_player_team=True))
     top_comeback = first_or_none(comeback_report)
-    top_momentum = first_or_none(momentum_report)
+    top_momentum = first_or_none(filter_ranked_report(momentum_report, require_player_team=False))
 
     recap_lines = [
         "# ClutchCast AI Post-Game Recap",
