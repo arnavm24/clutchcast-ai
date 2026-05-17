@@ -1,6 +1,7 @@
 from pathlib import Path
 import html
 import sys
+import textwrap
 
 import pandas as pd
 import plotly.express as px
@@ -60,8 +61,12 @@ TEAM_COLORS = {
 st.set_page_config(page_title="ClutchCast AI", page_icon="🏀", layout="wide")
 
 
+def render_html(markup: str) -> None:
+    st.markdown(textwrap.dedent(markup).strip(), unsafe_allow_html=True)
+
+
 def apply_custom_css() -> None:
-    st.markdown(
+    render_html(
         """
         <style>
         :root { --panel: #101621; --panel-soft: #151D2A; --line: #263244; --text: #F8FAFC; --muted: #94A3B8; }
@@ -72,20 +77,23 @@ def apply_custom_css() -> None:
         .eyebrow { color: #8EA0BA; font-size: .72rem; text-transform: uppercase; letter-spacing: .14em; font-weight: 700; }
         .hero-shell { border: 1px solid rgba(148,163,184,.22); background: linear-gradient(135deg, rgba(16,22,34,.96), rgba(6,10,18,.98)); border-radius: 20px; padding: 20px; box-shadow: 0 24px 80px rgba(0,0,0,.42); }
         .scoreboard { display: grid; grid-template-columns: 1fr 190px 1fr; gap: 18px; align-items: center; }
-        .team-box { min-height: 172px; border: 1px solid rgba(148,163,184,.18); border-radius: 18px; padding: 18px; background: linear-gradient(145deg, rgba(255,255,255,.055), rgba(255,255,255,.02)); display: flex; align-items: center; gap: 18px; }
+        .team-box { min-height: 188px; border: 1px solid rgba(148,163,184,.18); border-radius: 18px; padding: 18px; background: linear-gradient(145deg, rgba(255,255,255,.055), rgba(255,255,255,.02)); display: flex; align-items: center; gap: 18px; }
         .team-box.home { flex-direction: row-reverse; text-align: right; }
-        .team-logo { width: 74px; height: 74px; object-fit: contain; filter: drop-shadow(0 8px 20px rgba(0,0,0,.45)); }
-        .team-fallback { width: 74px; height: 74px; border-radius: 50%; display:flex; align-items:center; justify-content:center; font-weight: 900; color:#07111F; background:#E5E7EB; }
+        .team-logo-wrap { width: 76px; height: 76px; border-radius: 50%; display:flex; align-items:center; justify-content:center; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.18); overflow:hidden; flex: 0 0 auto; }
+        .team-logo { width: 68px; height: 68px; object-fit: contain; filter: drop-shadow(0 8px 20px rgba(0,0,0,.45)); }
+        .team-fallback { width: 76px; height: 76px; border-radius: 50%; display:flex; align-items:center; justify-content:center; font-weight: 900; color:#07111F; background:#E5E7EB; flex: 0 0 auto; }
         .team-name { color: #AAB7CA; font-size: .82rem; text-transform: uppercase; letter-spacing: .11em; font-weight: 800; }
-        .team-score { font-size: 4.4rem; line-height: .92; font-weight: 900; color: #F8FAFC; }
-        .team-prob { margin-top: 8px; font-size: 1rem; color: #CBD5E1; }
+        .team-score { font-size: 4.55rem; line-height: .92; font-weight: 900; color: #F8FAFC; }
+        .team-prob-label { margin-top: 12px; color: #8EA0BA; font-size: .72rem; text-transform: uppercase; letter-spacing: .12em; font-weight: 800; }
+        .team-prob-big { font-size: 2.5rem; line-height: 1; font-weight: 900; color: #F8FAFC; margin-top: 2px; }
         .clock-card { border-radius: 18px; padding: 22px 14px; text-align:center; background: rgba(5,9,16,.82); border: 1px solid rgba(148,163,184,.18); }
         .clock-value { font-size: 2.05rem; font-weight: 900; color: white; }
         .clock-label { color: #94A3B8; font-size: .78rem; text-transform: uppercase; letter-spacing: .16em; }
         .model-pill { display:inline-block; margin-top: 12px; padding: 6px 10px; border-radius: 999px; background: rgba(59,130,246,.14); border: 1px solid rgba(59,130,246,.32); color: #BFDBFE; font-size: .74rem; font-weight: 700; }
         .wp-wrap { margin-top: 18px; }
-        .wp-row { display:flex; justify-content:space-between; color:#DDE7F4; font-weight: 800; margin-bottom: 8px; }
-        .wp-bar { height: 20px; border-radius: 999px; overflow: hidden; display:flex; background:#111827; border:1px solid rgba(148,163,184,.22); }
+        .wp-row { display:flex; justify-content:space-between; color:#DDE7F4; font-weight: 900; margin-bottom: 8px; font-size: 1.15rem; }
+        .wp-row strong { font-size: 1.9rem; line-height: 1; }
+        .wp-bar { height: 24px; border-radius: 999px; overflow: hidden; display:flex; background:#111827; border:1px solid rgba(148,163,184,.22); }
         .wp-away, .wp-home { height: 100%; }
         .metric-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
         .metric-card, .intel-card, .live-card { border: 1px solid rgba(148,163,184,.18); background: rgba(15,23,42,.78); border-radius: 16px; padding: 16px; min-height: 116px; }
@@ -102,13 +110,12 @@ def apply_custom_css() -> None:
         .stTabs [aria-selected="true"] { background: #E5E7EB !important; color: #111827 !important; }
         @media (max-width: 980px) { .scoreboard { grid-template-columns: 1fr; } .metric-grid { grid-template-columns: 1fr 1fr; } .team-box.home { flex-direction: row; text-align:left; } }
         </style>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
 def esc(value) -> str:
-    return html.escape(str(value))
+    return html.escape(str(value), quote=True)
 
 
 def format_nba_clock(clock_value) -> str:
@@ -372,32 +379,35 @@ def build_comeback_report(predictions: pd.DataFrame) -> pd.DataFrame:
     ]]
 
 
-def render_team_block(team: str, score: int, prob: float, color: str, side: str) -> str:
+def render_logo(team: str, color: str) -> str:
     logo_url = team_logo_url(team)
-    logo = (
-        f'<img class="team-logo" src="{logo_url}" alt="{esc(team)} logo" onerror="this.style.display=\'none\'">'
-        if logo_url else f'<div class="team-fallback" style="background:{color};">{esc(team)[:3]}</div>'
+    if logo_url:
+        return f'<div class="team-logo-wrap"><img class="team-logo" src="{esc(logo_url)}" alt="{esc(team)} logo"></div>'
+    return f'<div class="team-fallback" style="background:{esc(color)};">{esc(team)[:3]}</div>'
+
+
+def render_team_block(team: str, score: int, prob: float, color: str, side: str) -> str:
+    return (
+        f'<div class="team-box {esc(side)}" style="border-color:{esc(color)}55;">'
+        f'{render_logo(team, color)}'
+        '<div>'
+        f'<div class="team-name">{esc(team)}</div>'
+        f'<div class="team-score">{score}</div>'
+        '<div class="team-prob-label">Win Probability</div>'
+        f'<div class="team-prob-big">{prob:.1f}%</div>'
+        '</div>'
+        '</div>'
     )
-    return f"""
-    <div class="team-box {side}" style="border-color:{color}55;">
-      {logo}
-      <div>
-        <div class="team-name">{esc(team)}</div>
-        <div class="team-score">{score}</div>
-        <div class="team-prob"><strong>{prob:.1f}%</strong> win probability</div>
-      </div>
-    </div>
-    """
 
 
 def render_metric_card(label: str, value: str, detail: str = "") -> str:
-    return f"""
-    <div class="metric-card">
-      <div class="metric-label">{esc(label)}</div>
-      <div class="metric-value">{esc(value)}</div>
-      <div class="metric-detail">{esc(detail)}</div>
-    </div>
-    """
+    return (
+        '<div class="metric-card">'
+        f'<div class="metric-label">{esc(label)}</div>'
+        f'<div class="metric-value">{esc(value)}</div>'
+        f'<div class="metric-detail">{esc(detail)}</div>'
+        '</div>'
+    )
 
 
 def show_scoreboard(predictions: pd.DataFrame, home_team: str, away_team: str, model_label: str, champion_label: str) -> None:
@@ -411,7 +421,7 @@ def show_scoreboard(predictions: pd.DataFrame, home_team: str, away_team: str, m
     period_label = format_period(int(row["period"]))
     clock = format_nba_clock(row["clock"])
 
-    st.markdown(
+    render_html(
         f"""
         <div class="hero-shell">
           <div class="eyebrow">ClutchCast AI Game Center</div>
@@ -420,20 +430,19 @@ def show_scoreboard(predictions: pd.DataFrame, home_team: str, away_team: str, m
             <div class="clock-card">
               <div class="clock-label">{esc(period_label)}</div>
               <div class="clock-value">{esc(clock)}</div>
-              <div class="model-pill">{esc(model_label)} · Champion: {esc(champion_label)}</div>
+              <div class="model-pill">{esc(model_label)} &middot; Champion: {esc(champion_label)}</div>
             </div>
             {render_team_block(home_team, home_score, home_prob, home_color, "home")}
           </div>
           <div class="wp-wrap">
-            <div class="wp-row"><span>{esc(away_team)} {away_prob:.1f}%</span><span>{esc(home_team)} {home_prob:.1f}%</span></div>
+            <div class="wp-row"><span>{esc(away_team)} <strong>{away_prob:.1f}%</strong></span><span>{esc(home_team)} <strong>{home_prob:.1f}%</strong></span></div>
             <div class="wp-bar">
-              <div class="wp-away" style="width:{away_prob:.3f}%; background: linear-gradient(90deg, {away_color}, {away_color}cc);"></div>
-              <div class="wp-home" style="width:{home_prob:.3f}%; background: linear-gradient(90deg, {home_color}cc, {home_color});"></div>
+              <div class="wp-away" style="width:{away_prob:.3f}%; background: linear-gradient(90deg, {esc(away_color)}, {esc(away_color)}cc);"></div>
+              <div class="wp-home" style="width:{home_prob:.3f}%; background: linear-gradient(90deg, {esc(home_color)}cc, {esc(home_color)});"></div>
             </div>
           </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -448,7 +457,7 @@ def show_metric_cards(data: dict, champion_label: str) -> None:
     turning = get_insight(data, "Most Valuable Play", field="details", default="Run game insights to identify the key play.")
     damaging = get_insight(data, "Most Damaging Play", field="details", default="Run game insights to identify the damaging play.")
 
-    st.markdown(
+    render_html(
         f"""
         <div class="metric-grid">
           {render_metric_card("Game Drama", f"{drama}/100" if str(drama).isdigit() else drama, short_text(drama_detail, 120))}
@@ -456,8 +465,7 @@ def show_metric_cards(data: dict, champion_label: str) -> None:
           {render_metric_card("Damaging Play", "Loser WP Swing", short_text(damaging, 120))}
           {render_metric_card("Champion Model", champion_label, "Selected by Brier score, log loss, ROC-AUC, then accuracy.")}
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -494,7 +502,7 @@ def show_game_intelligence_panel(data: dict, predictions: pd.DataFrame) -> None:
         "No hidden momentum report found yet.",
     )
 
-    st.markdown(
+    render_html(
         f"""
         <div class="section-card">
           <div class="eyebrow">Game Intelligence</div>
@@ -503,13 +511,12 @@ def show_game_intelligence_panel(data: dict, predictions: pd.DataFrame) -> None:
           <div class="intel-card"><div class="intel-title">Top Player Impact</div><div class="intel-body">{esc(short_text(player_text, 220))}</div></div>
           <div class="intel-card"><div class="intel-title">Key Play</div><div class="intel-body">{esc(short_text(key_play, 220))}</div></div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
 def show_live_mode_panel(game_id: str) -> None:
-    st.markdown(
+    render_html(
         f"""
         <div class="live-card">
           <div class="eyebrow">Live Mode MVP</div>
@@ -519,12 +526,17 @@ def show_live_mode_panel(game_id: str) -> None:
             <strong>Live endpoint:</strong> <code>/predict/{esc(game_id)}?mode=live</code>
           </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
-def show_win_probability_chart(predictions: pd.DataFrame, home_team: str, away_team: str, champion_view: bool) -> None:
+def show_win_probability_chart(
+    predictions: pd.DataFrame,
+    home_team: str,
+    away_team: str,
+    champion_view: bool,
+    chart_key: str,
+) -> None:
     st.subheader("Champion Win Probability Timeline" if champion_view else "Win Probability Timeline")
     chart_data = add_game_time_columns(predictions)
     chart_data_long = chart_data.melt(
@@ -551,7 +563,7 @@ def show_win_probability_chart(predictions: pd.DataFrame, home_team: str, away_t
     fig.update_xaxes(gridcolor="#1F2937")
     fig.add_hline(y=50, line_dash="dot", line_color="#9CA3AF")
     fig.update_layout(template="plotly_dark", plot_bgcolor="#0B1020", paper_bgcolor="rgba(0,0,0,0)", hovermode="x unified", height=430, margin=dict(l=20, r=20, t=30, b=20))
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", key=chart_key)
 
 
 def show_game_overview(data: dict, predictions: pd.DataFrame, game_id: str, home_team: str, away_team: str, model_label: str, champion_label: str, champion_view: bool) -> None:
@@ -560,7 +572,13 @@ def show_game_overview(data: dict, predictions: pd.DataFrame, game_id: str, home
 
     left, right = st.columns([2.15, 1], gap="large")
     with left:
-        show_win_probability_chart(predictions, home_team, away_team, champion_view)
+        show_win_probability_chart(
+            predictions,
+            home_team,
+            away_team,
+            champion_view,
+            chart_key="overview_win_probability_chart",
+        )
     with right:
         show_game_intelligence_panel(data, predictions)
         show_live_mode_panel(game_id)
@@ -648,7 +666,7 @@ def main() -> None:
     model_label = MODE_LABELS.get(model_key, model_key)
     champion_view = model_key == champion_key
 
-    st.markdown('<div class="eyebrow">NBA Win Probability Platform</div>', unsafe_allow_html=True)
+    render_html('<div class="eyebrow">NBA Win Probability Platform</div>')
     st.title("ClutchCast AI")
     st.caption(f"{away_team} at {home_team} · Game ID `{selected_game_id}`")
 
@@ -659,7 +677,13 @@ def main() -> None:
     with tab1:
         show_game_overview(data, predictions, selected_game_id, home_team, away_team, model_label, champion_label, champion_view)
     with tab2:
-        show_win_probability_chart(predictions, home_team, away_team, champion_view)
+        show_win_probability_chart(
+            predictions,
+            home_team,
+            away_team,
+            champion_view,
+            chart_key="full_win_probability_chart",
+        )
     with tab3:
         show_game_insights(data, selected_game_id)
     with tab4:
