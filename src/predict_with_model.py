@@ -4,6 +4,7 @@ import argparse
 import joblib
 import pandas as pd
 
+from ml_pipeline_utils import apply_terminal_state_overrides, load_feature_columns
 from model_features import build_model_features
 
 
@@ -25,24 +26,7 @@ def load_model():
 
 
 def load_model_feature_columns() -> list[str]:
-    feature_path = MODELS_DIR / "win_probability_model_features.txt"
-
-    if not feature_path.exists():
-        raise FileNotFoundError(
-            "No model feature list found. Run:\n"
-            "python src/train_model.py"
-        )
-
-    feature_columns = [
-        line.strip()
-        for line in feature_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-
-    if not feature_columns:
-        raise ValueError("Model feature list is empty.")
-
-    return feature_columns
+    return load_feature_columns()
 
 
 def load_game_state(game_id: str | None = None) -> pd.DataFrame:
@@ -87,24 +71,12 @@ def add_ml_predictions(
 ) -> pd.DataFrame:
     output = game_state.copy()
 
-    # Build the same improved features used during training.
     model_ready_data = build_model_features(output)
-
     validate_features(model_ready_data, feature_columns)
 
     X = model_ready_data[feature_columns]
-
-    home_win_prob = model.predict_proba(X)[:, 1]
-
-    output["home_win_prob"] = home_win_prob
-    output["away_win_prob"] = 1 - output["home_win_prob"]
-
-    output["home_win_prob_pct"] = (output["home_win_prob"] * 100).round(1)
-    output["away_win_prob_pct"] = (output["away_win_prob"] * 100).round(1)
-
-    output["wp_change"] = output["home_win_prob"].diff().fillna(0)
-    output["abs_wp_change"] = output["wp_change"].abs()
-
+    output["home_win_prob"] = model.predict_proba(X)[:, 1]
+    output = apply_terminal_state_overrides(output)
     output["prediction_source"] = "logistic_regression_model_improved_features"
 
     return output
