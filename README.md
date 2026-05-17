@@ -1,10 +1,10 @@
 # ClutchCast AI
 
-ClutchCast AI is an NBA win-probability and game-intelligence platform. It turns NBA play-by-play data into game-state rows, trains multiple probability models fairly, selects a Champion Model by proper probability metrics, and presents the result in a Streamlit dashboard.
+ClutchCast AI is an NBA win-probability and game-intelligence platform. It turns NBA play-by-play data into game-state rows, trains multiple probability models fairly, selects a Champion Model by proper probability metrics, and presents the result in a polished Streamlit game-center dashboard.
 
 The project supports two workflows:
 
-- Past/completed game analysis using historical NBA play-by-play data.
+- Past/completed game analysis using historical NBA play-by-play data in the Streamlit dashboard.
 - Local-first live prediction updates through a Flask + WebSocket MVP that polls `nba_api` and runs the Champion Model.
 
 ## Why It Exists
@@ -17,7 +17,7 @@ Most sports prediction demos stop at a cool chart. ClutchCast AI is designed to 
 - `pandas` for state building, feature engineering, and reports
 - `scikit-learn` for logistic regression, random forest, scaling, and metrics
 - `PyTorch` for a tabular neural-network benchmark
-- `Streamlit` and `Plotly` for the dashboard
+- `Streamlit` and `Plotly` for the historical dashboard
 - `Flask` and `Flask-SocketIO` for the local live prediction MVP
 
 ## Modeling Approach
@@ -68,16 +68,18 @@ No raw text columns, identifiers, final result leakage, or future score changes 
 
 ## Dashboard Features
 
-The Streamlit dashboard includes:
+The Streamlit dashboard is a historical game-center experience. It includes:
 
+- Game Overview with hero scoreboard, team win probabilities, model status, and top intelligence cards
 - Champion Win Probability Timeline
+- Game Insights: drama score, most valuable play, most damaging play, and clutch-time scoring
 - Turning Points
 - Player Impact
-- Clutch Pressure
-- Comeback Reality
-- Game Insights: drama score, most valuable play, most damaging play, and clutch-time scoring
+- Clutch Pressure and Comeback Reality
 - Game Recap
 - Model Evaluation with leaderboard, Brier score, log loss, ROC-AUC, accuracy, final model probabilities, and disagreement moments
+
+Live prediction is not embedded directly into Streamlit yet. The live MVP runs through the Flask/SocketIO backend.
 
 ## Local Setup
 
@@ -125,7 +127,7 @@ streamlit run app/streamlit_app.py
 
 ## Live Backend MVP
 
-The backend is intentionally local-first and polling-based. It is not a production sports-data service.
+The backend is intentionally local-first and polling-based. It is not a production sports-data service. Streamlit remains the historical dashboard; live updates are served by Flask/SocketIO.
 
 Run it:
 
@@ -136,19 +138,19 @@ python backend/app.py
 Health check:
 
 ```powershell
-curl http://127.0.0.1:5000/health
+curl.exe http://127.0.0.1:5000/health
 ```
 
 Historical prediction endpoint:
 
 ```powershell
-curl "http://127.0.0.1:5000/predict/YOUR_GAME_ID?mode=historical"
+curl.exe "http://127.0.0.1:5000/predict/YOUR_GAME_ID?mode=historical"
 ```
 
 Live polling prediction endpoint:
 
 ```powershell
-curl "http://127.0.0.1:5000/predict/YOUR_GAME_ID?mode=live"
+curl.exe "http://127.0.0.1:5000/predict/YOUR_GAME_ID?mode=live"
 ```
 
 WebSocket event:
@@ -169,8 +171,9 @@ The backend already shares the Champion Model inference path with historical ana
 
 - Accuracy depends heavily on training data size and season coverage.
 - `nba_api` is unofficial and can be slow or temporarily unavailable.
-- The app is historical-first; live mode is an MVP using polling.
+- The Streamlit app is historical-first; live mode is available through the backend MVP.
 - Possession, lineup, team-strength, rest, injuries, and betting-market context are future improvements.
+- Team logos use the public NBA static logo path when the abbreviation is recognized, and fall back gracefully when unavailable.
 - The neural network is a benchmark, not assumed to be best. The champion is whatever wins on probability metrics.
 
 ## Generated Artifacts
