@@ -1,49 +1,66 @@
 from pathlib import Path
 import argparse
+import json
 
+import joblib
 import pandas as pd
+import torch
+
+from ml_pipeline_utils import (
+    TARGET_COLUMN,
+    apply_terminal_state_overrides,
+    compute_probability_metrics,
+    load_shared_training_inputs,
+    rank_leaderboard,
+)
+from train_baseline import baseline_home_win_probability
+from train_neural_network import WinProbabilityNeuralNetwork
 
 
 PROCESSED_DIR = Path("data/processed")
+MODELS_DIR = Path("models")
 REPORTS_DIR = Path("reports")
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 MODEL_FILES = {
     "baseline": "baseline_predictions_{game_id}.csv",
-    "logistic_ml": "ml_predictions_{game_id}.csv",
-    "advanced_ml": "advanced_predictions_{game_id}.csv",
-    "neural": "neural_predictions_{game_id}.csv",
+    "logistic_regression": "ml_predictions_{game_id}.csv",
+    "random_forest": "advanced_predictions_{game_id}.csv",
+    "pytorch_neural_network": "neural_predictions_{game_id}.csv",
+}
+
+MODEL_LABELS = {
+    "baseline": "Baseline Rule Model",
+    "logistic_regression": "Logistic Regression",
+    "random_forest": "Random Forest",
+    "pytorch_neural_network": "PyTorch Neural Network",
+}
+
+MODEL_PROBABILITY_COLUMNS = {
+    "baseline": "baseline_home_win_prob_pct",
+    "logistic_regression": "logistic_regression_home_win_prob_pct",
+    "random_forest": "random_forest_home_win_prob_pct",
+    "pytorch_neural_network": "pytorch_neural_network_home_win_prob_pct",
 }
 
 
 def get_available_game_ids() -> list[str]:
-    baseline_ids = {
-        file.stem.replace("baseline_predictions_", "")
-        for file in PROCESSED_DIR.glob("baseline_predictions_*.csv")
-    }
+    game_id_sets = []
 
-    ml_ids = {
-        file.stem.replace("ml_predictions_", "")
-        for file in PROCESSED_DIR.glob("ml_predictions_*.csv")
-    }
+    for filename in MODEL_FILES.values():
+        prefix = filename.split("{game_id}")[0]
+        suffix = filename.split("{game_id}")[1]
+        game_ids = {
+            file.name.replace(prefix, "").replace(suffix, "")
+            for file in PROCESSED_DIR.glob(filename.format(game_id="*"))
+        }
+        game_id_sets.append(game_ids)
 
-    advanced_ids = {
-        file.stem.replace("advanced_predictions_", "")
-        for file in PROCESSED_DIR.glob("advanced_predictions_*.csv")
-    }
+    if not game_id_sets:
+        return []
 
-    neural_ids = {
-        file.stem.replace("neural_predictions_", "")
-        for file in PROCESSED_DIR.glob("neural_predictions_*.csv")
-    }
-
-    return sorted(
-        baseline_ids
-        .intersection(ml_ids)
-        .intersection(advanced_ids)
-        .intersection(neural_ids)
-    )
+    return sorted(set.intersection(*game_id_sets))
 
 
 def load_prediction_file(game_id: str, model_key: str) -> pd.DataFrame:
@@ -77,91 +94,47 @@ def compare_predictions(predictions: dict[str, pd.DataFrame]) -> pd.DataFrame:
     validate_prediction_lengths(predictions)
 
     baseline = predictions["baseline"]
-    logistic_ml = predictions["logistic_ml"]
-    advanced_ml = predictions["advanced_ml"]
-    neural = predictions["neural"]
-
     comparison = pd.DataFrame()
 
-    comparison["game_id"] = baseline["game_id"]
-    comparison["period"] = baseline["period"]
-    comparison["clock"] = baseline["clock"]
-    comparison["home_score"] = baseline["home_score"]
-    comparison["away_score"] = baseline["away_score"]
-    comparison["score_margin_home"] = baseline["score_margin_home"]
-    comparison["event_team"] = baseline["event_team"]
-    comparison["event_player"] = baseline["event_player"]
-    comparison["event_description"] = baseline["event_description"]
+    context_columns = [
+        "game_id",
+        "period",
+        "clock",
+        "home_score",
+        "away_score",
+        "score_margin_home",
+        "event_team",
+        "event_player",
+        "event_description",
+    ]
 
-    comparison["baseline_home_win_prob_pct"] = baseline["home_win_prob_pct"]
-    comparison["logistic_ml_home_win_prob_pct"] = logistic_ml["home_win_prob_pct"]
-    comparison["advanced_ml_home_win_prob_pct"] = advanced_ml["home_win_prob_pct"]
-    comparison["neural_home_win_prob_pct"] = neural["home_win_prob_pct"]
+    for column in context_columns:
+        comparison[column] = baseline[column]
 
-    comparison["logistic_minus_baseline_pct"] = (
-        comparison["logistic_ml_home_win_prob_pct"]
-        - comparison["baseline_home_win_prob_pct"]
+    probability_columns = []
+
+    for model_key, df in predictions.items():
+        probability_column = MODEL_PROBABILITY_COLUMNS[model_key]
+        comparison[probability_column] = df["home_win_prob_pct"]
+        probability_columns.append(probability_column)
+
+    for model_key, probability_column in MODEL_PROBABILITY_COLUMNS.items():
+        if model_key == "baseline":
+            continue
+
+        diff_column = f"{model_key}_minus_baseline_pct"
+        abs_diff_column = f"abs_{model_key}_minus_baseline_pct"
+
+        comparison[diff_column] = (
+            comparison[probability_column]
+            - comparison[MODEL_PROBABILITY_COLUMNS["baseline"]]
+        ).round(2)
+        comparison[abs_diff_column] = comparison[diff_column].abs().round(2)
+
+    comparison["max_model_disagreement_pct"] = (
+        comparison[probability_columns].max(axis=1)
+        - comparison[probability_columns].min(axis=1)
     ).round(2)
-
-    comparison["advanced_minus_baseline_pct"] = (
-        comparison["advanced_ml_home_win_prob_pct"]
-        - comparison["baseline_home_win_prob_pct"]
-    ).round(2)
-
-    comparison["advanced_minus_logistic_pct"] = (
-        comparison["advanced_ml_home_win_prob_pct"]
-        - comparison["logistic_ml_home_win_prob_pct"]
-    ).round(2)
-
-    comparison["neural_minus_baseline_pct"] = (
-        comparison["neural_home_win_prob_pct"]
-        - comparison["baseline_home_win_prob_pct"]
-    ).round(2)
-
-    comparison["neural_minus_logistic_pct"] = (
-        comparison["neural_home_win_prob_pct"]
-        - comparison["logistic_ml_home_win_prob_pct"]
-    ).round(2)
-
-    comparison["neural_minus_advanced_pct"] = (
-        comparison["neural_home_win_prob_pct"]
-        - comparison["advanced_ml_home_win_prob_pct"]
-    ).round(2)
-
-    comparison["abs_logistic_minus_baseline_pct"] = (
-        comparison["logistic_minus_baseline_pct"].abs()
-    ).round(2)
-
-    comparison["abs_advanced_minus_baseline_pct"] = (
-        comparison["advanced_minus_baseline_pct"].abs()
-    ).round(2)
-
-    comparison["abs_advanced_minus_logistic_pct"] = (
-        comparison["advanced_minus_logistic_pct"].abs()
-    ).round(2)
-
-    comparison["abs_neural_minus_baseline_pct"] = (
-        comparison["neural_minus_baseline_pct"].abs()
-    ).round(2)
-
-    comparison["abs_neural_minus_logistic_pct"] = (
-        comparison["neural_minus_logistic_pct"].abs()
-    ).round(2)
-
-    comparison["abs_neural_minus_advanced_pct"] = (
-        comparison["neural_minus_advanced_pct"].abs()
-    ).round(2)
-
-    comparison["max_model_disagreement_pct"] = comparison[
-        [
-            "abs_logistic_minus_baseline_pct",
-            "abs_advanced_minus_baseline_pct",
-            "abs_advanced_minus_logistic_pct",
-            "abs_neural_minus_baseline_pct",
-            "abs_neural_minus_logistic_pct",
-            "abs_neural_minus_advanced_pct",
-        ]
-    ].max(axis=1)
 
     return comparison
 
@@ -172,47 +145,22 @@ def build_summary(comparison: pd.DataFrame) -> pd.DataFrame:
     summary = {
         "game_id": str(final_row["game_id"]).zfill(10),
         "rows_compared": len(comparison),
-
-        "avg_logistic_vs_baseline_diff_pct": round(
-            comparison["abs_logistic_minus_baseline_pct"].mean(), 2
-        ),
-        "avg_advanced_vs_baseline_diff_pct": round(
-            comparison["abs_advanced_minus_baseline_pct"].mean(), 2
-        ),
-        "avg_advanced_vs_logistic_diff_pct": round(
-            comparison["abs_advanced_minus_logistic_pct"].mean(), 2
-        ),
-        "avg_neural_vs_baseline_diff_pct": round(
-            comparison["abs_neural_minus_baseline_pct"].mean(), 2
-        ),
-        "avg_neural_vs_logistic_diff_pct": round(
-            comparison["abs_neural_minus_logistic_pct"].mean(), 2
-        ),
-        "avg_neural_vs_advanced_diff_pct": round(
-            comparison["abs_neural_minus_advanced_pct"].mean(), 2
-        ),
-
         "max_model_disagreement_pct": round(
             comparison["max_model_disagreement_pct"].max(), 2
         ),
-
-        "baseline_final_home_win_prob_pct": final_row[
-            "baseline_home_win_prob_pct"
-        ],
-        "logistic_ml_final_home_win_prob_pct": final_row[
-            "logistic_ml_home_win_prob_pct"
-        ],
-        "advanced_ml_final_home_win_prob_pct": final_row[
-            "advanced_ml_home_win_prob_pct"
-        ],
-        "neural_final_home_win_prob_pct": final_row[
-            "neural_home_win_prob_pct"
-        ],
-
         "final_home_score": int(final_row["home_score"]),
         "final_away_score": int(final_row["away_score"]),
         "final_home_margin": int(final_row["score_margin_home"]),
     }
+
+    for model_key, probability_column in MODEL_PROBABILITY_COLUMNS.items():
+        summary[f"{model_key}_final_home_win_prob_pct"] = final_row[probability_column]
+
+        if model_key != "baseline":
+            diff_column = f"abs_{model_key}_minus_baseline_pct"
+            summary[f"avg_{model_key}_vs_baseline_diff_pct"] = round(
+                comparison[diff_column].mean(), 2
+            )
 
     return pd.DataFrame([summary])
 
@@ -231,15 +179,9 @@ def get_biggest_disagreements(
         "event_player",
         "event_description",
         "baseline_home_win_prob_pct",
-        "logistic_ml_home_win_prob_pct",
-        "advanced_ml_home_win_prob_pct",
-        "neural_home_win_prob_pct",
-        "logistic_minus_baseline_pct",
-        "advanced_minus_baseline_pct",
-        "advanced_minus_logistic_pct",
-        "neural_minus_baseline_pct",
-        "neural_minus_logistic_pct",
-        "neural_minus_advanced_pct",
+        "logistic_regression_home_win_prob_pct",
+        "random_forest_home_win_prob_pct",
+        "pytorch_neural_network_home_win_prob_pct",
         "max_model_disagreement_pct",
     ]
 
@@ -251,10 +193,184 @@ def get_biggest_disagreements(
     )
 
 
+def evaluate_baseline_model(
+    train_data: pd.DataFrame,
+    test_data: pd.DataFrame,
+) -> dict:
+    prediction_frame = test_data.copy()
+    prediction_frame["home_win_prob"] = prediction_frame.apply(
+        baseline_home_win_probability,
+        axis=1,
+    )
+    prediction_frame = apply_terminal_state_overrides(prediction_frame)
+
+    return compute_probability_metrics(
+        y_true=prediction_frame[TARGET_COLUMN],
+        probabilities=prediction_frame["home_win_prob"],
+        model_key="baseline",
+        model_name=MODEL_LABELS["baseline"],
+        feature_count=0,
+        train_data=train_data,
+        test_data=test_data,
+    )
+
+
+def evaluate_sklearn_model(
+    model_key: str,
+    model_name: str,
+    model_path: Path,
+    train_data: pd.DataFrame,
+    test_data: pd.DataFrame,
+    feature_columns: list[str],
+) -> dict:
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"Missing {model_name} model artifact: {model_path}. "
+            "Train models before generating the leaderboard."
+        )
+
+    model = joblib.load(model_path)
+    probabilities = model.predict_proba(test_data[feature_columns])[:, 1]
+
+    prediction_frame = test_data.copy()
+    prediction_frame["home_win_prob"] = probabilities
+    prediction_frame = apply_terminal_state_overrides(prediction_frame)
+
+    return compute_probability_metrics(
+        y_true=prediction_frame[TARGET_COLUMN],
+        probabilities=prediction_frame["home_win_prob"],
+        model_key=model_key,
+        model_name=model_name,
+        feature_count=len(feature_columns),
+        train_data=train_data,
+        test_data=test_data,
+    )
+
+
+def evaluate_pytorch_model(
+    train_data: pd.DataFrame,
+    test_data: pd.DataFrame,
+    feature_columns: list[str],
+) -> dict:
+    model_path = MODELS_DIR / "pytorch_win_probability_model.pt"
+    scaler_path = MODELS_DIR / "pytorch_scaler.joblib"
+
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"Missing PyTorch model artifact: {model_path}. "
+            "Train models before generating the leaderboard."
+        )
+
+    if not scaler_path.exists():
+        raise FileNotFoundError(
+            f"Missing PyTorch scaler artifact: {scaler_path}. "
+            "Train models before generating the leaderboard."
+        )
+
+    checkpoint = torch.load(model_path, map_location="cpu")
+    input_size = checkpoint.get("input_size", len(feature_columns))
+
+    model = WinProbabilityNeuralNetwork(input_size=input_size)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+
+    scaler = joblib.load(scaler_path)
+    X_test = test_data[feature_columns].astype(float)
+    X_test_scaled = scaler.transform(X_test)
+    X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
+
+    with torch.no_grad():
+        probabilities = model(X_test_tensor).numpy().flatten()
+
+    prediction_frame = test_data.copy()
+    prediction_frame["home_win_prob"] = probabilities
+    prediction_frame = apply_terminal_state_overrides(prediction_frame)
+
+    return compute_probability_metrics(
+        y_true=prediction_frame[TARGET_COLUMN],
+        probabilities=prediction_frame["home_win_prob"],
+        model_key="pytorch_neural_network",
+        model_name=MODEL_LABELS["pytorch_neural_network"],
+        feature_count=len(feature_columns),
+        train_data=train_data,
+        test_data=test_data,
+    )
+
+
+def to_jsonable(value):
+    if pd.isna(value):
+        return None
+
+    if hasattr(value, "item"):
+        return value.item()
+
+    return value
+
+
+def build_leaderboard() -> pd.DataFrame:
+    train_data, test_data, feature_columns, _train_game_ids, _test_game_ids = (
+        load_shared_training_inputs()
+    )
+
+    metrics = [
+        evaluate_baseline_model(train_data, test_data),
+        evaluate_sklearn_model(
+            model_key="logistic_regression",
+            model_name=MODEL_LABELS["logistic_regression"],
+            model_path=MODELS_DIR / "win_probability_model.joblib",
+            train_data=train_data,
+            test_data=test_data,
+            feature_columns=feature_columns,
+        ),
+        evaluate_sklearn_model(
+            model_key="random_forest",
+            model_name=MODEL_LABELS["random_forest"],
+            model_path=MODELS_DIR / "advanced_win_probability_model.joblib",
+            train_data=train_data,
+            test_data=test_data,
+            feature_columns=feature_columns,
+        ),
+        evaluate_pytorch_model(train_data, test_data, feature_columns),
+    ]
+
+    leaderboard = rank_leaderboard(pd.DataFrame(metrics))
+
+    leaderboard_path = REPORTS_DIR / "model_leaderboard.csv"
+    champion_path = REPORTS_DIR / "champion_model.json"
+
+    leaderboard.to_csv(leaderboard_path, index=False)
+
+    champion = {
+        key: to_jsonable(value)
+        for key, value in leaderboard.iloc[0].to_dict().items()
+    }
+
+    champion["selection_rule"] = (
+        "Lowest Brier score, then lowest log loss, then highest ROC-AUC, "
+        "then highest accuracy."
+    )
+
+    champion_path.write_text(
+        json.dumps(champion, indent=2),
+        encoding="utf-8",
+    )
+
+    print("\nSuccess.")
+    print(f"Saved model leaderboard to: {leaderboard_path}")
+    print(f"Saved champion model report to: {champion_path}")
+    print("\nModel leaderboard:")
+    print(leaderboard.to_string(index=False))
+
+    print("\nChampion model:")
+    print(f"{champion['model_name']} ({champion['model_key']})")
+
+    return leaderboard
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare baseline, logistic ML, advanced ML, "
+            "Compare baseline, logistic regression, random forest, "
             "and PyTorch neural network predictions."
         )
     )
@@ -276,12 +392,16 @@ def parse_args() -> argparse.Namespace:
         help="Number of biggest disagreement moments to show.",
     )
 
+    parser.add_argument(
+        "--leaderboard",
+        action="store_true",
+        help="Evaluate all models on the shared test-game split and select a champion.",
+    )
+
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-
+def run_game_comparison(game_id: str | None, top_n: int) -> None:
     available_game_ids = get_available_game_ids()
 
     if not available_game_ids:
@@ -293,28 +413,28 @@ def main() -> None:
             "python src/run_pipeline.py --game-id YOUR_GAME_ID --model neural"
         )
 
-    if args.game_id:
-        game_id = str(args.game_id).zfill(10)
+    if game_id:
+        selected_game_id = str(game_id).zfill(10)
     else:
-        game_id = available_game_ids[-1]
+        selected_game_id = available_game_ids[-1]
 
-    if game_id not in available_game_ids:
+    if selected_game_id not in available_game_ids:
         raise ValueError(
-            f"Game {game_id} does not have all four prediction files.\n"
+            f"Game {selected_game_id} does not have all four prediction files.\n"
             f"Available game IDs: {available_game_ids}"
         )
 
-    print(f"Comparing models for game: {game_id}")
+    print(f"Comparing models for game: {selected_game_id}")
 
-    predictions = load_predictions(game_id)
+    predictions = load_predictions(selected_game_id)
     comparison = compare_predictions(predictions)
 
     summary = build_summary(comparison)
-    disagreements = get_biggest_disagreements(comparison, top_n=args.top_n)
+    disagreements = get_biggest_disagreements(comparison, top_n=top_n)
 
-    comparison_path = REPORTS_DIR / f"model_comparison_{game_id}.csv"
-    summary_path = REPORTS_DIR / f"model_comparison_summary_{game_id}.csv"
-    disagreements_path = REPORTS_DIR / f"model_disagreements_{game_id}.csv"
+    comparison_path = REPORTS_DIR / f"model_comparison_{selected_game_id}.csv"
+    summary_path = REPORTS_DIR / f"model_comparison_summary_{selected_game_id}.csv"
+    disagreements_path = REPORTS_DIR / f"model_disagreements_{selected_game_id}.csv"
 
     comparison.to_csv(comparison_path, index=False)
     summary.to_csv(summary_path, index=False)
@@ -330,6 +450,16 @@ def main() -> None:
 
     print("\nBiggest disagreement moments:")
     print(disagreements.to_string(index=False))
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.leaderboard:
+        build_leaderboard()
+        return
+
+    run_game_comparison(args.game_id, args.top_n)
 
 
 if __name__ == "__main__":
