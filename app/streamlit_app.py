@@ -126,11 +126,17 @@ def load_dashboard_data(game_id: str, model_key: str) -> dict:
         st.info(f"Run `python src/run_pipeline.py --game-id {game_id} --model baseline|ml|advanced|neural`")
         st.stop()
 
+    insights_md_path = REPORTS_DIR / f"game_insights_{game_id}.md"
+
     return {
         "predictions": pd.read_csv(prediction_path, dtype={"game_id": str}),
         "comparison_summary": load_csv_if_exists(REPORTS_DIR / f"model_comparison_summary_{game_id}.csv"),
         "model_disagreements": load_csv_if_exists(REPORTS_DIR / f"model_disagreements_{game_id}.csv"),
         "leaderboard": load_csv_if_exists(REPORTS_DIR / "model_leaderboard.csv"),
+        "game_insights": load_csv_if_exists(REPORTS_DIR / f"game_insights_{game_id}.csv"),
+        "game_insights_md": insights_md_path.read_text(encoding="utf-8")
+        if insights_md_path.exists()
+        else "",
         "recap": (REPORTS_DIR / f"post_game_recap_{game_id}.md").read_text(encoding="utf-8")
         if (REPORTS_DIR / f"post_game_recap_{game_id}.md").exists()
         else "No recap file found. Run `python src/recap.py --game-id YOUR_GAME_ID`.",
@@ -169,6 +175,9 @@ def clean_table_columns(df: pd.DataFrame) -> pd.DataFrame:
         "log_loss": "Log Loss",
         "roc_auc": "ROC-AUC",
         "accuracy": "Accuracy",
+        "insight": "Insight",
+        "value": "Value",
+        "details": "Details",
         "total_raw_home_wp_swing_pct": "Total Home WP Swing",
         "total_absolute_swing_pct": "Total Swing Impact",
         "avg_absolute_swing_pct": "Avg Swing Impact",
@@ -286,6 +295,18 @@ def build_comeback_report(predictions: pd.DataFrame) -> pd.DataFrame:
     ]]
 
 
+def show_game_insights(data: dict, game_id: str) -> None:
+    st.subheader("Game Insights")
+
+    if data["game_insights_md"]:
+        st.markdown(data["game_insights_md"])
+    elif not data["game_insights"].empty:
+        st.dataframe(clean_table_columns(data["game_insights"]), width="stretch", hide_index=True)
+    else:
+        st.warning("Game insights report was not found.")
+        st.code(f"python src/game_insights.py --game-id {game_id}", language="powershell")
+
+
 def show_model_evaluation(data: dict, champion: dict) -> None:
     st.subheader("Model Evaluation")
     st.caption("Champion selection ranks models by lowest Brier score, then lowest log loss, highest ROC-AUC, and highest accuracy.")
@@ -357,8 +378,8 @@ def main() -> None:
     show_game_summary(predictions, home_team, away_team, model_label)
     show_win_probability_chart(predictions, home_team, away_team, champion_view=(model_key == champion_key))
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "Turning Points", "Player Impact", "Clutch Pressure", "Comeback Reality", "Model Evaluation", "Game Recap"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "Turning Points", "Player Impact", "Clutch Pressure", "Comeback Reality", "Game Insights", "Model Evaluation", "Game Recap"
     ])
 
     with tab1:
@@ -370,8 +391,10 @@ def main() -> None:
     with tab4:
         st.dataframe(clean_table_columns(build_comeback_report(predictions)), width="stretch", hide_index=True)
     with tab5:
-        show_model_evaluation(data, champion)
+        show_game_insights(data, selected_game_id)
     with tab6:
+        show_model_evaluation(data, champion)
+    with tab7:
         st.markdown(data["recap"])
 
 
