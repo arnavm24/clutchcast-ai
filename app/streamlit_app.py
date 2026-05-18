@@ -792,37 +792,67 @@ def show_live_prediction(payload: dict, health: dict | None, champion_label: str
         champion_label=str(champion_name),
         eyebrow="Live Game Center",
     )
-    if not has_play_by_play or prediction_source == "scoreboard_fallback_baseline":
+    warning = str(payload.get("warning") or "")
+    fallback_reason = str(payload.get("fallback_reason") or "")
+    if warning:
+        st.warning(warning)
+    elif not has_play_by_play or prediction_source == "scoreboard_fallback_baseline":
         st.warning("Play-by-play is not available yet, so ClutchCast is using scoreboard fallback.")
     status_text = "Backend online" if health and health.get("ok") else "Backend status unknown"
     cards = [
         render_metric_card("Last Play", short_text(payload.get("last_play", "No play available"), 42), short_text(payload.get("last_play", "No play available"), 160)),
+        render_metric_card("Data Source", data_source.replace("_", " ").title(), f"Matched by: {payload.get('matched_by', 'unknown')}"),
+        render_metric_card("Play-by-Play", "Available" if has_play_by_play else "Unavailable", f"Rows: {payload.get('play_by_play_rows', 0)}"),
         render_metric_card("Prediction Source", str(model_name), prediction_source.replace("_", " ").title()),
-        render_metric_card("Backend Status", status_text, f"Data source: {data_source.replace('_', ' ')}"),
-        render_metric_card("Champion Model", str(champion_name), "Automatically used once live play-by-play becomes available."),
     ]
     render_html('<div class="metric-grid">' + "".join(cards) + '</div>')
+    detail_cards = [
+        render_metric_card("Backend Status", status_text, f"GET /predict/{esc(game_id)}?mode=live"),
+        render_metric_card("Fallback Reason", short_text(fallback_reason or "Full model path is active.", 44), short_text(fallback_reason or "Champion model inference used live play-by-play.", 160)),
+        render_metric_card("Champion Model", str(champion_name), "Automatically used once live play-by-play becomes available."),
+    ]
+    render_html('<div class="summary-grid">' + "".join(detail_cards) + '</div>')
 
 
-def show_today_games_helper() -> None:
-    if not st.button("Load Today's Games", key="live_load_today_games"):
-        return
+def show_today_games_helper() -> str | None:
+    selected_game_id = None
+    if st.button("Load Today's Games", key="live_load_today_games"):
+        with st.spinner("Fetching today's games from the live backend..."):
+            result = fetch_backend_json("/games/today", timeout=10.0)
 
-    with st.spinner("Fetching today's games from the live backend..."):
-        result = fetch_backend_json("/games/today", timeout=10.0)
+        if not result["ok"]:
+            error = result.get("data", {}).get("error", "Could not load today's games.")
+            st.error(error)
+        else:
+            st.session_state["live_today_games"] = result.get("data", {}).get("games", [])
 
-    if not result["ok"]:
-        error = result.get("data", {}).get("error", "Could not load today's games.")
-        st.error(error)
-        return
-
-    games = result.get("data", {}).get("games", [])
+    games = st.session_state.get("live_today_games", [])
     if not games:
-        st.info("No NBA games were returned by the scoreboard endpoint for today.")
-        return
+        return None
+
+    def game_label(game: dict) -> str:
+        away = game.get("away_team") or "Away"
+        home = game.get("home_team") or "Home"
+        away_score = game.get("away_score", 0)
+        home_score = game.get("home_score", 0)
+        period = game.get("period", 0)
+        clock = game.get("clock") or game.get("status") or ""
+        source = game.get("data_source", "scoreboard")
+        return f"{game.get('GAME_ID')} | {away} {away_score} at {home} {home_score} | Q{period} {clock} | {source}"
 
     display = pd.DataFrame(games)
+    selected_index = st.selectbox(
+        "Today's games from live scoreboard",
+        range(len(games)),
+        format_func=lambda index: game_label(games[index]),
+        key="live_today_games_select",
+    )
+    if st.button("Use Selected GAME_ID", key="live_use_today_game"):
+        selected_game_id = str(games[selected_index].get("GAME_ID", "")).zfill(10)
+        st.session_state["live_game_id"] = selected_game_id
+        st.success(f"Selected GAME_ID {selected_game_id}.")
     st.dataframe(clean_table_columns(display), width="stretch", hide_index=True)
+    return selected_game_id
 
 
 def show_live_game_tab(champion_label: str) -> None:
@@ -841,7 +871,9 @@ def show_live_game_tab(champion_label: str) -> None:
 
     check_status = st.button("Check Backend Status", key="live_check_backend")
     fetch_live = st.button("Fetch Live Prediction", type="primary", key="live_fetch_prediction")
-    show_today_games_helper()
+    selected_today_game = show_today_games_helper()
+    if selected_today_game:
+        game_id = selected_today_game
 
     if auto_refresh:
         components.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 10000);</script>", height=0)

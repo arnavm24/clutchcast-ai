@@ -107,23 +107,38 @@ def _fetch_scoreboard_frames(game_date: str | None = None) -> tuple[pd.DataFrame
     return games, line_score
 
 
-def _fetch_live_scoreboard_games() -> list[dict[str, Any]]:
-    response = live_scoreboard.ScoreBoard(timeout=10)
-    if hasattr(response, "get_dict"):
-        payload = response.get_dict()
-    elif hasattr(response, "games"):
-        games = response.games.get_dict()
-        if isinstance(games, list):
-            return games
-        if isinstance(games, dict):
-            nested_games = games.get("games", [])
-            return nested_games if isinstance(nested_games, list) else []
+def _coerce_live_games(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [game for game in payload if isinstance(game, dict)]
+    if not isinstance(payload, dict):
         return []
-    else:
-        return []
+
     scoreboard_payload = payload.get("scoreboard", payload)
-    games = scoreboard_payload.get("games", [])
-    return games if isinstance(games, list) else []
+    games = scoreboard_payload.get("games") if isinstance(scoreboard_payload, dict) else None
+    if isinstance(games, list):
+        return [game for game in games if isinstance(game, dict)]
+    if isinstance(games, dict):
+        nested_games = games.get("games")
+        if isinstance(nested_games, list):
+            return [game for game in nested_games if isinstance(game, dict)]
+    return []
+
+
+def _fetch_live_scoreboard_payload() -> dict[str, Any]:
+    try:
+        response = live_scoreboard.ScoreBoard(timeout=10)
+    except TypeError:
+        response = live_scoreboard.ScoreBoard()
+    if hasattr(response, "get_dict"):
+        return response.get_dict()
+    if hasattr(response, "games"):
+        games = response.games.get_dict()
+        return {"scoreboard": {"games": games if isinstance(games, list) else _coerce_live_games(games)}}
+    return {}
+
+
+def _fetch_live_scoreboard_games() -> list[dict[str, Any]]:
+    return _coerce_live_games(_fetch_live_scoreboard_payload())
 
 
 def _live_team_abbreviation(team: dict[str, Any], fallback: str) -> str:
@@ -163,38 +178,102 @@ def _live_last_play(game: dict[str, Any], status: str) -> str:
     return status
 
 
+def _game_id_candidates(game: dict[str, Any]) -> list[tuple[str, str]]:
+    candidates = []
+    for key in ["gameId", "game_id", "GAME_ID"]:
+        value = _safe_str(game.get(key))
+        if value:
+            candidates.append((value, key))
+            candidates.append((_clean_game_id(value), f"{key}_zfilled"))
+    game_code = _safe_str(game.get("gameCode") or game.get("GAMECODE"))
+    if game_code:
+        candidates.append((game_code, "gameCode"))
+    return candidates
+
+
+def _direct_match_game(game: dict[str, Any], requested_id: str) -> str | None:
+    for value, source in _game_id_candidates(game):
+        if value == requested_id or _clean_game_id(value) == requested_id:
+            return source
+    return None
+
+
+def _stats_team_ids_for_game(game_id: str) -> tuple[int, int] | None:
+    try:
+        games, _ = _fetch_scoreboard_frames()
+    except Exception:
+        return None
+    if games.empty or "GAME_ID" not in games.columns:
+        return None
+    matches = games[games["GAME_ID"].astype(str).str.zfill(10) == game_id]
+    if matches.empty:
+        return None
+    game = matches.iloc[0]
+    home_team_id = _safe_int(game.get("HOME_TEAM_ID"))
+    away_team_id = _safe_int(game.get("VISITOR_TEAM_ID"))
+    if home_team_id and away_team_id:
+        return home_team_id, away_team_id
+    return None
+
+
+def _team_ids_match_game(game: dict[str, Any], requested_team_ids: tuple[int, int] | None) -> bool:
+    if not requested_team_ids:
+        return False
+    home = game.get("homeTeam") or {}
+    away = game.get("awayTeam") or {}
+    return _safe_int(home.get("teamId")) == requested_team_ids[0] and _safe_int(away.get("teamId")) == requested_team_ids[1]
+
+
+def _normalize_live_scoreboard_game(game: dict[str, Any], requested_id: str, matched_by: str) -> dict[str, Any]:
+    home = game.get("homeTeam") or {}
+    away = game.get("awayTeam") or {}
+    status = _safe_str(game.get("gameStatusText"), "Live scoreboard available")
+    clock = _safe_str(game.get("gameClock"), status)
+    game_state = _safe_str(game.get("gameState")) or _safe_str(game.get("gameStatus"))
+    raw_id = _safe_str(game.get("gameId") or game.get("game_id") or game.get("GAME_ID"))
+    home_score = _safe_int(home.get("score"))
+    away_score = _safe_int(away.get("score"))
+    warning = ""
+    if "live" in status.lower() and home_score == 0 and away_score == 0:
+        warning = "Live scoreboard matched this game, but scores are missing or still zero."
+
+    return {
+        "game_id": requested_id,
+        "status": status,
+        "game_status": game_state,
+        "game_state": game_state,
+        "period": _safe_int(game.get("period")),
+        "clock": clock,
+        "game_clock": clock,
+        "home_score": home_score,
+        "away_score": away_score,
+        "home_team": _live_team_abbreviation(home, "Home"),
+        "away_team": _live_team_abbreviation(away, "Away"),
+        "home_team_name": _live_team_name(home, "Home"),
+        "away_team_name": _live_team_name(away, "Away"),
+        "home_team_id": _safe_int(home.get("teamId")),
+        "away_team_id": _safe_int(away.get("teamId")),
+        "last_play": _live_last_play(game, status),
+        "data_source": "nba_api_live_scoreboard",
+        "has_play_by_play": False,
+        "matched_by": matched_by,
+        "raw_id_used": raw_id,
+        "GAMECODE": _safe_str(game.get("gameCode") or game.get("GAMECODE")),
+        "warning": warning,
+    }
+
+
 def _live_scoreboard_snapshot(game_id: str) -> dict[str, Any] | None:
-    for game in _fetch_live_scoreboard_games():
-        current_id = _clean_game_id(game.get("gameId") or game.get("game_id") or game.get("GAME_ID"))
-        if current_id != game_id:
-            continue
+    games = _fetch_live_scoreboard_games()
+    for game in games:
+        matched_by = _direct_match_game(game, game_id)
+        if matched_by:
+            return _normalize_live_scoreboard_game(game, game_id, matched_by)
 
-        home = game.get("homeTeam") or {}
-        away = game.get("awayTeam") or {}
-        status = _safe_str(game.get("gameStatusText"), "Live scoreboard available")
-        clock = _safe_str(game.get("gameClock"), status)
-        game_state = _safe_str(game.get("gameState")) or _safe_str(game.get("gameStatus"))
-
-        return {
-            "game_id": game_id,
-            "status": status,
-            "game_status": game_state,
-            "game_state": game_state,
-            "period": _safe_int(game.get("period")),
-            "clock": clock,
-            "game_clock": clock,
-            "home_score": _safe_int(home.get("score")),
-            "away_score": _safe_int(away.get("score")),
-            "home_team": _live_team_abbreviation(home, "Home"),
-            "away_team": _live_team_abbreviation(away, "Away"),
-            "home_team_name": _live_team_name(home, "Home"),
-            "away_team_name": _live_team_name(away, "Away"),
-            "home_team_id": _safe_int(home.get("teamId")),
-            "away_team_id": _safe_int(away.get("teamId")),
-            "last_play": _live_last_play(game, status),
-            "data_source": "nba_api_live_scoreboard",
-            "has_play_by_play": False,
-        }
+    requested_team_ids = _stats_team_ids_for_game(game_id)
+    for game in games:
+        if _team_ids_match_game(game, requested_team_ids):
+            return _normalize_live_scoreboard_game(game, game_id, "teamIds")
     return None
 
 
@@ -235,6 +314,8 @@ def _stats_scoreboard_snapshot(game_id: str) -> dict[str, Any] | None:
 
     return {
         "game_id": game_id,
+        "raw_id_used": game_id,
+        "matched_by": "GAME_ID",
         "status": status,
         "period": _safe_int(game.get("PERIOD")),
         "clock": clock,
@@ -253,10 +334,15 @@ def _scoreboard_snapshot(game_id: str) -> dict[str, Any] | None:
         snapshot = _live_scoreboard_snapshot(game_id)
         if snapshot is not None:
             return snapshot
-    except Exception:
-        pass
+    except Exception as error:
+        live_error = str(error)
+    else:
+        live_error = ""
 
-    return _stats_scoreboard_snapshot(game_id)
+    snapshot = _stats_scoreboard_snapshot(game_id)
+    if snapshot is not None and live_error:
+        snapshot["live_scoreboard_error"] = live_error
+    return snapshot
 
 
 def _paid_provider_placeholders(game_id: str) -> None:
@@ -284,9 +370,11 @@ def get_live_game_snapshot(game_id: str) -> dict[str, Any]:
 
     clean_id = _clean_game_id(game_id)
     play_by_play_error: str | None = None
+    play_by_play_rows = 0
 
     try:
         play_by_play = _fetch_play_by_play(clean_id)
+        play_by_play_rows = len(play_by_play)
         if not play_by_play.empty:
             latest = play_by_play.iloc[-1]
             try:
@@ -307,6 +395,9 @@ def get_live_game_snapshot(game_id: str) -> dict[str, Any]:
                     "last_play": _latest_text(play_by_play, "description") or _safe_str(snapshot.get("last_play")),
                     "data_source": "nba_api_play_by_play",
                     "has_play_by_play": True,
+                    "play_by_play_rows": play_by_play_rows,
+                    "fallback_reason": "",
+                    "warning": "",
                     "_play_by_play_df": play_by_play,
                 }
             )
@@ -322,6 +413,11 @@ def get_live_game_snapshot(game_id: str) -> dict[str, Any]:
     if scoreboard_snapshot is not None:
         if play_by_play_error:
             scoreboard_snapshot["play_by_play_error"] = play_by_play_error
+            scoreboard_snapshot["fallback_reason"] = f"PlayByPlayV3 failed: {play_by_play_error}. Using scoreboard fallback."
+        else:
+            scoreboard_snapshot["fallback_reason"] = "PlayByPlayV3 returned 0 rows. Using scoreboard fallback."
+        scoreboard_snapshot["play_by_play_rows"] = play_by_play_rows
+        scoreboard_snapshot.setdefault("warning", "Full champion model could not run because live play-by-play is unavailable.")
         return scoreboard_snapshot
 
     _paid_provider_placeholders(clean_id)
@@ -337,6 +433,11 @@ def get_live_game_snapshot(game_id: str) -> dict[str, Any]:
         "last_play": "No play-by-play or scoreboard data is available yet.",
         "data_source": "fallback_empty",
         "has_play_by_play": False,
+        "play_by_play_rows": play_by_play_rows,
+        "fallback_reason": "No live play-by-play or scoreboard match was available.",
+        "matched_by": "",
+        "raw_id_used": clean_id,
+        "warning": "Reliable production live tracking may require a dedicated live sports data provider.",
     }
 
 
@@ -347,27 +448,25 @@ def get_today_games() -> list[dict[str, Any]]:
         live_games = []
         for game in _fetch_live_scoreboard_games():
             game_id = _clean_game_id(game.get("gameId") or game.get("game_id") or game.get("GAME_ID"))
-            home = game.get("homeTeam") or {}
-            away = game.get("awayTeam") or {}
-            status = _safe_str(game.get("gameStatusText"), "Scheduled")
-            clock = _safe_str(game.get("gameClock"), status)
+            normalized = _normalize_live_scoreboard_game(game, game_id, "today_live_scoreboard")
             live_games.append(
                 {
-                    "GAME_ID": game_id,
-                    "GAMECODE": _safe_str(game.get("gameCode")),
-                    "status": status,
-                    "game_status": _safe_str(game.get("gameState")) or _safe_str(game.get("gameStatus")),
-                    "period": _safe_int(game.get("period")),
-                    "clock": clock,
-                    "home_score": _safe_int(home.get("score")),
-                    "away_score": _safe_int(away.get("score")),
-                    "home_team_id": _safe_int(home.get("teamId")),
-                    "away_team_id": _safe_int(away.get("teamId")),
-                    "home_team": _live_team_abbreviation(home, ""),
-                    "away_team": _live_team_abbreviation(away, ""),
-                    "home_team_name": _live_team_name(home, ""),
-                    "away_team_name": _live_team_name(away, ""),
-                    "data_source": "nba_api_live_scoreboard",
+                    "GAME_ID": normalized["raw_id_used"] or game_id,
+                    "GAMECODE": normalized.get("GAMECODE", ""),
+                    "status": normalized["status"],
+                    "game_status": normalized["game_status"],
+                    "game_state": normalized["game_state"],
+                    "period": normalized["period"],
+                    "clock": normalized["clock"],
+                    "home_team": normalized["home_team"],
+                    "away_team": normalized["away_team"],
+                    "home_score": normalized["home_score"],
+                    "away_score": normalized["away_score"],
+                    "home_team_id": normalized["home_team_id"],
+                    "away_team_id": normalized["away_team_id"],
+                    "data_source": normalized["data_source"],
+                    "raw_id_used": normalized["raw_id_used"],
+                    "matched_by": normalized["matched_by"],
                 }
             )
         if live_games:
@@ -386,6 +485,8 @@ def get_today_games() -> list[dict[str, Any]]:
         away_team_id = _safe_int(game.get("VISITOR_TEAM_ID"))
         home_team = str(home_team_id) if home_team_id else ""
         away_team = str(away_team_id) if away_team_id else ""
+        home_score = 0
+        away_score = 0
 
         if not line_score.empty and "GAME_ID" in line_score.columns:
             lines = line_score[line_score["GAME_ID"].astype(str).str.zfill(10) == game_id]
@@ -394,8 +495,10 @@ def get_today_games() -> list[dict[str, Any]]:
                 away_rows = lines[lines["TEAM_ID"].astype(str) == str(away_team_id)]
                 if not home_rows.empty:
                     home_team = _safe_str(home_rows.iloc[0].get("TEAM_ABBREVIATION"), home_team)
+                    home_score = _safe_int(home_rows.iloc[0].get("PTS"))
                 if not away_rows.empty:
                     away_team = _safe_str(away_rows.iloc[0].get("TEAM_ABBREVIATION"), away_team)
+                    away_score = _safe_int(away_rows.iloc[0].get("PTS"))
 
         output.append(
             {
@@ -408,6 +511,11 @@ def get_today_games() -> list[dict[str, Any]]:
                 "away_team_id": away_team_id,
                 "home_team": home_team,
                 "away_team": away_team,
+                "home_score": home_score,
+                "away_score": away_score,
+                "data_source": "nba_api_stats_scoreboardv2",
+                "raw_id_used": game_id,
+                "matched_by": "stats_scoreboardv2",
             }
         )
     return output

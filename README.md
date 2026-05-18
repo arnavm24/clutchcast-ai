@@ -144,6 +144,22 @@ Then open the **Live Game** tab, enter the live NBA `GAME_ID`, click **Fetch Liv
 
 The Live Game tab displays the current period, clock, score, home/away win probability, last play, champion model, and backend status. Live accuracy and update speed depend on NBA API availability and delay.
 
+Live data fallback order:
+
+1. `PlayByPlayV3` rows, which enable full Champion Model inference.
+2. `nba_api.live.nba.endpoints.scoreboard.ScoreBoard`, which enables live score/clock fallback probability when play-by-play is delayed.
+3. `ScoreboardV2`, only as a last free-data fallback.
+
+If both free live endpoints fail or return stale data, reliable production live tracking requires a dedicated live sports data provider.
+
+Live debugging:
+
+```powershell
+python src/debug_live_scoreboard.py
+curl.exe http://127.0.0.1:5000/games/today
+curl.exe "http://127.0.0.1:5000/predict/GAME_ID?mode=live"
+```
+
 ## Live Backend MVP
 
 The backend is intentionally local-first and polling-based. It is not a production sports-data service.
